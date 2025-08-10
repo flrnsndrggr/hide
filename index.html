@@ -41,6 +41,7 @@
 
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d', { alpha: false });
+  if(!ctx){ alert('2D canvas not supported in this environment.'); throw new Error('No 2D context'); }
   let DPR = Math.min(3, window.devicePixelRatio || 1), scale = DPR;
   function fitCanvas(){
     const vw = Math.max(1, window.innerWidth);
@@ -61,7 +62,7 @@
     const k = e.key.toLowerCase();
     if(['arrowup','arrowdown','arrowleft','arrowright','w','a','s','d'].includes(k)) e.preventDefault();
     keys.add(k);
-    if(k==='r') game.resetLevel();
+    if(k==='r') { if(!game.running){ game.startNewRun(); } else { game.resetLevel(); } }
     if(k==='m') game.debug = !game.debug;
     if(k==='n') game.audio.toggleMute();
   }, { passive: false });
@@ -189,6 +190,21 @@
 
   const W = ()=>canvas.width/scale, H = ()=>canvas.height/scale;
   const BOT_RADIUS=14, PLAYER_RADIUS=12, PARTICLE_COUNT=3800, GRID_SIZE=16;
+  // Safe localStorage helpers
+  function safeGet(k){ try{ return localStorage.getItem(k); }catch{ return null; } }
+  function safeSet(k,v){ try{ localStorage.setItem(k,v); }catch{} }
+  // Bot kind -> color helper (single source of truth)
+  function botColor(kind){
+    return kind==='tele'?'#bb66ff'
+      : kind==='eater'?'#ffaa44'
+      : kind==='cloner'?'#66ffee'
+      : kind==='grower'?'#ff66aa'
+      : kind==='phase'?'#99ff99'
+      : kind==='mimic'?'#ffffff'
+      : kind==='turret'?'#ffbbcc'
+      : kind==='stalker'?'#66aaff'
+      : '#ff2a2a';
+  }
 
   function rectsIntersect(a,b){return !(a.x+a.w<b.x||b.x+b.w<a.x||a.y+a.h<b.y||b.y+b.h<a.y);}
   function circleRectCollide(cx,cy,cr,r){ const x=clamp(cx,r.x,r.x+r.w), y=clamp(cy,r.y,r.y+r.h); const dx=cx-x, dy=cy-y; return dx*dx+dy*dy<=cr*cr; }
@@ -198,28 +214,73 @@
   function isCoarsePointer(){ return window.matchMedia && window.matchMedia('(pointer:coarse)').matches; }
   function genLevelConfig(level){
     const mobile = isCoarsePointer() || (Math.min(window.innerWidth, window.innerHeight) < 820);
+    // Persisted run counter influences difficulty across sessions
+    const runs = Number(safeGet('hide_runs')||0);
+    // First run easier, then +6% difficulty per run up to +50%
+    const diffMul = runs===0 ? 0.85 : Math.min(1.5, 1 + runs*0.06);
     return {
-      playerSpeed:   mobile ? 3200 : (1800 + Math.min(600, level*120)),
+      playerSpeed:   mobile ? 3200 : (1800 + Math.min(600, level*120)) * (runs===0?1.0:1.0),
       playerFriction:mobile ? 0.90 : 0.93,
-      playerMaxSpeed:mobile ? 820  : (420 + Math.min(180, level*20)),
-      botSpeed:130 + Math.min(100, level*8),
-      botPathRecalc:Math.max(0.08, 0.32 - level*0.02),
-      botSightRange:240 + level*12,
+      playerMaxSpeed:mobile ? 820  : (420 + Math.min(180, level*20)) * (runs===0?1.0:1.0),
+      botSpeed:(130 + Math.min(100, level*8)) * diffMul,
+      botPathRecalc:Math.max(0.06, (0.32 - level*0.02) / diffMul),
+      botSightRange:(240 + level*12) * diffMul,
       botFOV:Math.PI*0.75,
-      botHearing:110 + level*8,
-      obstacleCount:8 + Math.min(22, Math.floor(level*1.6)),
+      botHearing:(110 + level*8) * diffMul,
+      obstacleCount: Math.round((8 + Math.min(22, Math.floor(level*1.6))) * (runs===0?0.9:Math.min(1.35, 1 + runs*0.04))),
       obstacleMaxSize:160,
       searchSpots:6 + Math.min(8, Math.floor(level/2)),
     };
   }
 
   function makeObstacles(count){
-    const obs=[]; const minW=60,minH=40,maxW=180,maxH=160; let tries=0;
-    while(obs.length<count && tries<count*20){
-      tries++; const w=minW+Math.random()*(maxW-minW), h=minH+Math.random()*(maxH-minH);
-      const x=20+Math.random()*(W()-w-40), y=20+Math.random()*(H()-h-40); const r={x,y,w,h}; let ok=true;
-      for(const o of obs){ if(!(r.x-8+r.w+16<o.x||o.x+o.w<r.x-8||r.y-8+r.h+16<o.y||o.y+o.h<r.y-8)){ ok=false; break; } }
-      if(ok) obs.push(r);
+    // Grid-aligned obstacle generator with optional moving / teleporting types
+    const cs=GRID_SIZE; // cell size smaller than player diameter -> gaps are visually present but impassable
+    const obs=[]; let tries=0;
+    const rndCells=(min,max)=> (min + Math.floor(Math.random()*Math.max(1,(max-min+1))));
+    while(obs.length<count && tries<count*40){
+      tries++;
+      // Choose size in cells
+      const maxCW = Math.max(3, Math.min(9, Math.floor(W()/cs/3)));
+      const maxCH = Math.max(2, Math.min(7, Math.floor(H()/cs/3)));
+      const cw=rndCells(3, maxCW); // 3..9 cells wide
+      const ch=rndCells(2, maxCH); // 2..7 cells high
+      const w=cw*cs, h=ch*cs;
+      // Choose top-left snapped to grid, leave 2-cell margin
+      const maxGX = Math.max(2, Math.floor(W()/cs)-cw-3);
+      const maxGY = Math.max(2, Math.floor(H()/cs)-ch-3);
+      const gx=rndCells(2, maxGX);
+      const gy=rndCells(2, maxGY);
+      const x=gx*cs, y=gy*cs;
+      const r={x,y,w,h, type:'static'};
+      // Leave narrow visual gaps (< player diameter) between blocks
+      let ok=true;
+      for(const o of obs){
+        const gap=cs*0.6; // smaller than player's diameter
+        if(!(r.x-gap+r.w+gap<o.x || o.x+o.w<r.x-gap || r.y-gap+r.h+gap<o.y || o.y+o.h<r.y-gap)){ ok=false; break; }
+      }
+      if(!ok) continue;
+      // Assign special types occasionally on higher levels
+      const lvl=game?.level||1;
+      const pMove = Math.min(0.15, 0.05 + lvl*0.01);
+      const pTele = Math.min(0.12, 0.04 + lvl*0.008);
+      const roll=Math.random();
+      if(roll < pMove){
+        r.type='move';
+        // Movement axis and range (in pixels), anchored to grid lines
+        r.axis=(Math.random()<0.5)?'x':'y';
+        r.baseX=r.x; r.baseY=r.y;
+        const spanCells=r.axis==='x'? rndCells(2,4): rndCells(2,3);
+        r.range=spanCells*cs;
+        r.phase=Math.random(); // offset for drawing anim
+        r.speedMul=0.25; // moves at fraction of player speed
+      } else if(roll < pMove + pTele){
+        r.type='tele';
+        r.cooldown= 2.5 + Math.random()*3.5; // time until next tele
+        r.timer=r.cooldown*0.5*Math.random();
+        r.shake=0; // shake timer before teleport
+      }
+      obs.push(r);
     }
     return obs;
   }
@@ -232,7 +293,7 @@
   class MinHeap{ constructor(c){this.c=c;this.a=[];} push(v){const a=this.a; a.push(v); let i=a.length-1; while(i>0){const p=(i-1)>>1; if(this.c(a[i],a[p])<0){[a[i],a[p]]=[a[p],a[i]]; i=p;} else break;}} pop(){const a=this.a; if(a.length===0)return null; const t=a[0]; const v=a.pop(); if(a.length>0){a[0]=v; this.down(0);} return t;} down(i){const a=this.a,n=a.length,c=this.c; while(true){let l=i*2+1,r=l+1,s=i; if(l<n&&c(a[l],a[s])<0)s=l; if(r<n&&c(a[r],a[s])<0)s=r; if(s===i)break; [a[i],a[s]]=[a[s],a[i]]; i=s;}} empty(){return this.a.length===0;} }
   class Grid{
     constructor(obstacles,agentRadius){
-      this.cs=GRID_SIZE; this.cols=Math.floor(W()/this.cs); this.rows=Math.floor(H()/this.cs);
+      this.cs=GRID_SIZE; this.cols=Math.max(3, Math.floor(W()/this.cs)); this.rows=Math.max(3, Math.floor(H()/this.cs));
       this.blocked=new Uint8Array(this.cols*this.rows);
       for(let gy=0;gy<this.rows;gy++) for(let gx=0;gx<this.cols;gx++){
         const cx=gx*this.cs+this.cs*0.5, cy=gy*this.cs+this.cs*0.5, idx=gy*this.cols+gx;
@@ -250,7 +311,9 @@
       const cameX=new Int16Array(this.cols*this.rows).fill(-1), cameY=new Int16Array(this.cols*this.rows).fill(-1);
       const gScore=new Float32Array(this.cols*this.rows).fill(Infinity), fScore=new Float32Array(this.cols*this.rows).fill(Infinity);
       const startI=idx(s.gx,s.gy), goalI=idx(g.gx,g.gy); gScore[startI]=0; fScore[startI]=heur(s.gx,s.gy,g.gx,g.gy); open.push({gx:s.gx,gy:s.gy,f:fScore[startI]});
-      const closed=new Uint8Array(this.cols*this.rows); let safety=0, maxNodes=this.cols*this.rows;
+      const closed=new Uint8Array(this.cols*this.rows); let safety=0;
+      // Cap expansions to avoid long stalls on tough maps
+      const maxNodes=Math.min(this.cols*this.rows, 2500);
       while(!open.empty()&&safety++<maxNodes){
         const cur=open.pop(); const ci=idx(cur.gx,cur.gy); if(closed[ci])continue; if(ci===goalI){ const path=[]; let cx=cur.gx, cy=cur.gy; while(!(cx===s.gx&&cy===s.gy)){ path.push(this.toWorld(cx,cy)); const pi=idx(cx,cy); const px=cameX[pi], py=cameY[pi]; if(px<0)break; cx=px; cy=py; } path.push(this.toWorld(s.gx,s.gy)); path.reverse(); return path; }
         closed[ci]=1;
@@ -292,16 +355,87 @@
     }
   }
 
-  // Minimal audio system for SFX (moved from style block)
+  // Minimal audio system for SFX + music
   class Sfx{
-    constructor(){ this.ctx=null; this.muted=false; }
-    init(){ if(this.ctx) return; try{ this.ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ this.ctx=null; } }
-    canPlay(){ return this.ctx && !this.muted; }
-    toggleMute(){ this.muted=!this.muted; }
+    constructor(){
+      this.ctx=null; this.muted=false;
+      this.master=null; this.bgGain=null; this.fxGain=null;
+      this.buffers={ background:null, movement:null, timer:null };
+      this.bgNode=null; this.bgEl=null; this.timerNode=null; this.movementNode=null;
+      this.loaded=false; this.loading=false;
+      this.bgRetry=null;
+    }
+    init(){
+      if(!this.ctx){ try{ this.ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ this.ctx=null; } }
+      if(!this.ctx) return;
+      if(!this.master){
+        // Gains
+        this.master=this.ctx.createGain(); this.master.gain.value=this.muted?0:1; this.master.connect(this.ctx.destination);
+        this.bgGain=this.ctx.createGain(); this.bgGain.gain.value=0.35; this.bgGain.connect(this.master);
+        this.fxGain=this.ctx.createGain(); this.fxGain.gain.value=1.0; this.fxGain.connect(this.master);
+      }
+      // Lazy-load audio files
+      this.load();
+      const tryStart = async()=>{ try{ await this.ctx.resume(); }catch{} this.startBackground(); };
+      tryStart();
+      // Keep retrying until bg is playing (handles autoplay restrictions)
+      if(!this.bgRetry){ this.bgRetry = setInterval(()=>{ if(!this.isBgPlaying()){ tryStart(); } else { clearInterval(this.bgRetry); this.bgRetry=null; } }, 1200); }
+      document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && !this.isBgPlaying()) tryStart(); }, { passive:true });
+    }
+    canPlay(){ return !!this.ctx; }
+    toggleMute(){ this.muted=!this.muted; if(this.master) this.master.gain.value=this.muted?0:1; }
     now(){ return this.ctx?this.ctx.currentTime:0; }
+    async load(){
+      if(this.loading||this.loaded||!this.ctx) return; this.loading=true;
+      const decode=async (url)=>{ const r=await fetch(url); const a=await r.arrayBuffer(); return new Promise((res,rej)=>this.ctx.decodeAudioData(a,res,rej)); };
+      try{
+        const [bg, mv, tm] = await Promise.all([
+          decode('background.mp3').catch(()=>null),
+          decode('movement.mp3').catch(()=>null),
+          decode('timer.mp3').catch(()=>null),
+        ]);
+        this.buffers.background=bg; this.buffers.movement=mv; this.buffers.timer=tm;
+        this.loaded=true; this.loading=false;
+        // Autostart background loop if available
+        this.startBackground();
+      }catch(e){ this.loading=false; }
+    }
+    isBgPlaying(){ return !!(this.bgNode || (this.bgEl && !this.bgEl.paused)); }
+    startBackground(){
+      if(!this.ctx) return;
+      if(this.isBgPlaying()) return;
+      // Prefer decoded buffer
+      if(this.buffers.background){
+        try{ const src=this.ctx.createBufferSource(); src.buffer=this.buffers.background; src.loop=true; src.connect(this.bgGain); src.start(); this.bgNode=src; return; }catch{}
+      }
+      // Fallback: HTMLAudio element routed into WebAudio
+      try{
+        if(!this.bgEl){ this.bgEl=new Audio('background.mp3'); this.bgEl.loop=true; this.bgEl.preload='auto'; this.bgEl.crossOrigin='anonymous'; }
+        const ensureNode=()=>{ try{ if(!this.bgEl._node){ const ms=this.ctx.createMediaElementSource(this.bgEl); ms.connect(this.bgGain); this.bgEl._node=ms; } }catch{} };
+        ensureNode(); const p=this.bgEl.play(); if(p&&p.catch){ p.catch(()=>{}); }
+      }catch{}
+    }
+    stopBackground(){ if(this.bgNode){ try{ this.bgNode.stop(); }catch{} this.bgNode.disconnect(); this.bgNode=null; } }
+    playMovement(){
+      if(!this.ctx||!this.buffers.movement) return;
+      // If a movement loop is already playing, restart from beginning
+      if(this.movementNode){ try{ this.movementNode.stop(); }catch{} try{ this.movementNode.disconnect(); }catch{} this.movementNode=null; }
+      const src=this.ctx.createBufferSource(); src.buffer=this.buffers.movement; src.loop=true;
+      const dest = this.fxGain || this.master || this.ctx.destination; src.connect(dest); try{ src.start(); }catch{}
+      this.movementNode=src;
+    }
+    stopMovement(){ if(this.movementNode){ try{ this.movementNode.stop(); }catch{} try{ this.movementNode.disconnect(); }catch{} this.movementNode=null; } }
+    startTimerLoop(){
+      if(!this.ctx||!this.buffers.timer) return;
+      if(this.timerNode){ try{ this.timerNode.stop(); }catch{} this.timerNode.disconnect(); this.timerNode=null; }
+      const src=this.ctx.createBufferSource(); src.buffer=this.buffers.timer; src.loop=true;
+      const dest = this.fxGain || this.master || this.ctx.destination; src.connect(dest); try{ src.start(); }catch{}
+      this.timerNode=src;
+    }
+    stopTimerLoop(){ if(this.timerNode){ try{ this.timerNode.stop(); }catch{} this.timerNode.disconnect(); this.timerNode=null; } }
     tone(freq=440, dur=0.08, type='sine', gain=0.03, attack=0.002, release=0.04){
       if(!this.canPlay()) return; const t=this.now(); const o=this.ctx.createOscillator(); const g=this.ctx.createGain();
-      o.type=type; o.frequency.value=freq; o.connect(g); g.connect(this.ctx.destination);
+      o.type=type; o.frequency.value=freq; o.connect(g); g.connect(this.fxGain||this.ctx.destination);
       const a=attack, r=release; g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gain,t+a);
       g.gain.setTargetAtTime(0,t+a+dur, r);
       o.start(t); o.stop(t+a+dur+r*3);
@@ -310,7 +444,7 @@
       if(!this.canPlay()) return; const len=Math.floor((this.ctx.sampleRate||44100)*dur); const buf=this.ctx.createBuffer(1,len,this.ctx.sampleRate);
       const d=buf.getChannelData(0); for(let i=0;i<len;i++){ d[i]=Math.random()*2-1; }
       const src=this.ctx.createBufferSource(); src.buffer=buf; const g=this.ctx.createGain(); g.gain.value=gain;
-      src.connect(g); g.connect(this.ctx.destination); const t=this.now(); src.start(t);
+      src.connect(g); (this.fxGain?g.connect(this.fxGain):g.connect(this.ctx.destination)); const t=this.now(); src.start(t);
     }
     step(){ const f=220+Math.random()*120; this.tone(f, 0.03, 'square', 0.015, 0.001, 0.02); }
     exit(){ this.tone(900,0.06,'sine',0.03); this.tone(1200,0.08,'square',0.02,0.002,0.03); }
@@ -392,8 +526,17 @@
     }
   }
   class Bot{
-    constructor(pos){ this.x=pos.x; this.y=pos.y; this.r=BOT_RADIUS; this.vx=0; this.vy=0; this.speed=120;
-      this.state='patrol'; this.lastSeen=null; this.path=[]; this.pathIndex=0; this.pathTimer=0; this.patrolPoints=[]; this.currentPatrol=0; this.searchPoints=[]; this.currentSearch=0; }
+    constructor(pos, kind='hunter'){
+      this.x=pos.x; this.y=pos.y; this.r=BOT_RADIUS; this.vx=0; this.vy=0; this.speed=120;
+      this.state='patrol'; this.lastSeen=null; this.path=[]; this.pathIndex=0; this.pathTimer=Math.random()*0.15; this.patrolPoints=[]; this.currentPatrol=0; this.searchPoints=[]; this.currentSearch=0;
+      this.kind=kind; // 'hunter','tele','eater','cloner','grower','phase','mimic','turret','stalker'
+      // Kind-specific timers/state
+      this.teleTimer = 1.5 + Math.random()*2.0;
+      this.cloneTimer = 3.0 + Math.random()*3.0;
+      this.eatTimer = 0.2;
+      this.growMax = BOT_RADIUS*1.9;
+    }
+    setDirectPath(grid, tx, ty){ const p=grid.findPath(this.x,this.y,tx,ty); if(p&&p.length>1){ this.path=p; this.pathIndex=1; this.pathTimer=0; } }
     canSee(player, obstacles, cfg){
       const dx=player.x-this.x, dy=player.y-this.y; if(dx*dx+dy*dy>cfg.botSightRange*cfg.botSightRange) return false;
       const heading=Math.atan2(this.vy||0.0001,this.vx||0.0001), dir=Math.atan2(dy,dx);
@@ -415,30 +558,52 @@
     update(dt, player, obstacles, cfg, grid, playerSp=0){
       // Bots move at the same instantaneous speed as the player (fallback to cfg when unavailable)
       this.speed = playerSp>0 ? playerSp : cfg.botSpeed;
-      const see=this.canSee(player,obstacles,cfg), hear=this.canHear(player,cfg);
-      if(see){ this.state='chase'; this.lastSeen={x:player.x,y:player.y}; } else if(this.state!=='chase'&&hear){ this.state='search'; this.lastSeen={x:player.x,y:player.y}; }
+      const canTick = dt>0; // only run expensive path logic when movement time advances
+      // Determine perception for this tick
+      const seenNow = (this.kind==='stalker') ? true : this.canSee(player,obstacles,cfg);
+      const heardNow = (this.kind==='stalker') ? false : this.canHear(player,cfg);
+      if(this.kind==='stalker'){
+        // Always knows player's position; slower to keep fair
+        this.speed *= 0.6;
+        this.state='chase'; this.lastSeen={x:player.x,y:player.y};
+      } else {
+        if(seenNow){ this.state='chase'; this.lastSeen={x:player.x,y:player.y}; }
+        else if(this.state!=='chase'&&heardNow){ this.state='search'; this.lastSeen={x:player.x,y:player.y}; }
+      }
       this.pathTimer-=dt;
       if(this.state==='chase'){
         if(grid.losClear(this.x,this.y,player.x,player.y,obstacles)){ this.seek(player.x,player.y,dt); }
         else{
-          if(this.pathTimer<=0){ const path=grid.findPath(this.x,this.y,player.x,player.y); if(path&&path.length>1){ this.path=path; this.pathIndex=1; } this.pathTimer=cfg.botPathRecalc; }
+          if(canTick && this.pathTimer<=0){
+            if(game.pfQueue && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:player.x, ty:player.y}); }
+            this.pathTimer=cfg.botPathRecalc;
+          }
           this.followPath(dt);
         }
-        if(!see && this.lastSeen){ this.state='search'; this.planSearchAround(this.lastSeen,cfg,grid); }
+        if(!seenNow && this.lastSeen){ this.state='search'; this.planSearchAround(this.lastSeen,cfg,grid); }
       } else if(this.state==='search'){
         if(this.lastSeen){
-          if(this.pathTimer<=0){ const path=grid.findPath(this.x,this.y,this.lastSeen.x,this.lastSeen.y); if(path&&path.length>1){ this.path=path; this.pathIndex=1; } this.pathTimer=cfg.botPathRecalc*1.1; }
+          if(canTick && this.pathTimer<=0){
+            if(game.pfQueue && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:this.lastSeen.x, ty:this.lastSeen.y}); }
+            this.pathTimer=cfg.botPathRecalc*1.1;
+          }
           if(Math.hypot(this.x-this.lastSeen.x,this.y-this.lastSeen.y)<18){
             if(!this.searchPoints.length) this.planSearchAround(this.lastSeen,cfg,grid);
             const target=this.searchPoints[this.currentSearch%Math.max(1,this.searchPoints.length)];
-            if(this.pathTimer<=0){ const p2=grid.findPath(this.x,this.y,target.x,target.y); if(p2&&p2.length>1){ this.path=p2; this.pathIndex=1; } this.pathTimer=cfg.botPathRecalc*1.2; this.currentSearch++; if(this.currentSearch>this.searchPoints.length*2){ this.state='patrol'; } }
+            if(canTick && this.pathTimer<=0){
+              if(game.pfQueue && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:target.x, ty:target.y}); }
+              this.pathTimer=cfg.botPathRecalc*1.2; this.currentSearch++; if(this.currentSearch>this.searchPoints.length*2){ this.state='patrol'; }
+            }
           }
           this.followPath(dt);
         } else this.state='patrol';
       } else {
         if(!this.patrolPoints.length) this.setPatrol(grid);
         const t=this.patrolPoints[this.currentPatrol%this.patrolPoints.length];
-        if(this.pathTimer<=0){ const p=grid.findPath(this.x,this.y,t.x,t.y); if(p&&p.length>1){ this.path=p; this.pathIndex=1; } this.pathTimer=cfg.botPathRecalc*1.3; }
+        if(canTick && this.pathTimer<=0){
+          if(game.pfQueue && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:t.x, ty:t.y}); }
+          this.pathTimer=cfg.botPathRecalc*1.3;
+        }
         this.followPath(dt); if(Math.hypot(this.x-t.x,this.y-t.y)<18) this.currentPatrol++;
       }
     }
@@ -453,8 +618,23 @@
     }
     seek(tx,ty,dt){ const dx=tx-this.x, dy=ty-this.y, d=Math.hypot(dx,dy)||1, n=[dx/d,dy/d]; this.vx=n[0]*this.speed; this.vy=n[1]*this.speed; this.x+=this.vx*dt; this.y+=this.vy*dt; }
     draw(ctx){
-      ctx.save(); ctx.shadowColor='#ff2a2a'; ctx.shadowBlur=14*scale; ctx.fillStyle='#ff2a2a';
-      const x=this.x*scale, y=this.y*scale, r=this.r*scale; ctx.beginPath();
+      const x=this.x*scale, y=this.y*scale, r=this.r*scale;
+      ctx.save();
+      // Colors by kind
+      let color='#ff2a2a', shadow=color;
+      if(this.kind==='tele') { color='#bb66ff'; shadow=color; }
+      else if(this.kind==='eater') { color='#ffaa44'; shadow=color; }
+      else if(this.kind==='cloner') { color='#66ffee'; shadow=color; }
+      else if(this.kind==='grower') { color='#ff66aa'; shadow=color; }
+      else if(this.kind==='phase') { color='#99ff99'; shadow=color; }
+      else if(this.kind==='mimic'){ color='#ffffff'; shadow='#ffffff'; }
+      else if(this.kind==='stalker'){ color='#66aaff'; shadow=color; }
+      // Invis during movement for 'phase'
+      const moving = Math.hypot(game.player.vx, game.player.vy) > 5;
+      if(this.kind==='phase' && moving){ ctx.globalAlpha=0.12; }
+      ctx.shadowColor=shadow; ctx.shadowBlur=14*scale; ctx.fillStyle=color;
+      // Hexagon for all kinds
+      ctx.beginPath();
       for(let i=0;i<6;i++){ const a=(Math.PI/3)*i+Math.PI/6; const px=x+Math.cos(a)*r, py=y+Math.sin(a)*r; if(i===0)ctx.moveTo(px,py); else ctx.lineTo(px,py); }
       ctx.closePath(); ctx.fill(); ctx.restore();
     }
@@ -465,14 +645,22 @@
   const game={
     level:1, player:null, bots:[], obstacles:[], exitRect:{x:0,y:0,w:26,h:26}, grid:null, mist:null, running:true, debug:false, bg:{x:0,y:0}, time:0,
     trails:{ player:null, bots:[] }, effects:[], fractal:new PsyFractal(),
-    audio:new Sfx(), lastStepTime:0, prevBotStates:new WeakMap(),
+    audio:new Sfx(), lastStepTime:0, prevBotStates:new WeakMap(), lastAmbushTime:-10,
+    // Audio state flags
+    wasMoving:false, anyTimerActivePrev:false,
     init(){
+      // Load persisted run counter
+      this.runs = Number(safeGet('hide_runs')||0);
+      // Pathfinding task queue to spread heavy work across frames
+      this.pfQueue = [];
       this.buildLevel(this.level);
       loop(performance.now());
       // Ensure audio context is unlocked on first user interaction (for Matrix 1)
       const initAudioOnce=()=>{ this.audio.init(); };
       window.addEventListener('pointerdown', initAudioOnce, { once:true, capture:true });
       window.addEventListener('keydown', initAudioOnce, { once:true, capture:true });
+      // Try start audio immediately as well (will retry until allowed)
+      this.audio.init();
       this.showMessage("Find the exit. Avoid the red hexagon. Arrow keys or left thumb. R restart. M debug.");
       if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
     },
@@ -507,7 +695,7 @@
           let coll=false;
           for(const o of obstacles){ if(rectsIntersect({x:r.x-6,y:r.y-6,w:r.w+12,h:r.h+12},o)){ coll=true; break; } }
           if(!coll){ exit=r; }
-          const farEnough = dist2(ppos.x,ppos.y, r.x+r.w/2, r.y+r.h/2) >= (W()*0.25)*(H()*0.25);
+          const farEnough = dist2(ppos.x,ppos.y, r.x+r.w/2, r.y+r.h/2) >= (Math.min(W(),H())*0.25)**2;
           if(!coll && farEnough){ ok=true; break; }
         }
         if(!ok) continue;
@@ -515,10 +703,21 @@
         const pathToExit=grid.findPath(ppos.x, ppos.y, exitCx, exitCy);
         if(pathToExit && pathToExit.length>1){
           // Commit level
-          this.obstacles=obstacles; this.grid=grid; this.player=new Player(ppos); this.bots=bposes.map(p=>new Bot(p)); this.exitRect=exit;
+          this.obstacles=obstacles; this.grid=grid; this.player=new Player(ppos);
+          // Assign diverse bot kinds with rarities
+          // Create bots with max 20% special kinds (non-red). Default kind is 'hunter' (red)
+          this.bots=bposes.map(p=>new Bot(p,'hunter'));
+          const maxSpecial = Math.floor(this.bots.length * 0.20);
+          const idxs=[...this.bots.keys()]; for(let i=idxs.length-1;i>0;i--){ const j=(Math.random()* (i+1))|0; [idxs[i],idxs[j]]=[idxs[j],idxs[i]]; }
+          const specials=['tele','cloner','grower','eater','phase','mimic','turret','stalker'];
+          for(let s=0; s<Math.min(maxSpecial, idxs.length); s++){
+            const i=idxs[s]; const pick=specials[(Math.random()*specials.length)|0]; this.bots[i].kind=pick;
+          }
+          this.exitRect=exit;
           this.mist=new ParticleMist(PARTICLE_COUNT, this.obstacles);
           this.trails.player=new Trail('#ffffff', 600);
-          this.trails.bots=this.bots.map(()=>new Trail('#ff2a2a', 500));
+          const colorOf=(k)=> k==='tele'?'#bb66ff': k==='eater'?'#ffaa44': k==='cloner'?'#66ffee': k==='grower'?'#ff66aa': k==='phase'?'#99ff99': k==='mimic'?'#ffffff': k==='turret'?'#ffbbcc': k==='stalker'?'#66aaff':'#ff2a2a';
+          this.trails.bots=this.bots.map(b=>new Trail(colorOf(b.kind), 500));
           this.effects.length=0;
           for(const b of this.bots){ b.setPatrol(this.grid); this.prevBotStates.set(b, b.state); }
           this.bg.x=this.player.x; this.bg.y=this.player.y;
@@ -526,7 +725,7 @@
           this.fractal.randomize();
           // Power-ups per level (moved into main path)
           this.powerUps=[];
-          const types=['slow','cull','shield','freeze','dash'];
+          const types=['slow','cull','shield','freeze','dash','predator'];
           const puCount = Math.min(4, 2 + Math.floor(Math.random()*3));
           for(let i=0;i<puCount;i++){
             let pos=null, tries=0; const SAFE_PU=80;
@@ -554,18 +753,19 @@
       (function(){
         const SAFE_PB=180; let pos=null, tries=0;
         while(tries++<400){ const c=randomFreePoint(game.obstacles, BOT_RADIUS); if(dist2(c.x,c.y, ppos.x,ppos.y) >= SAFE_PB*SAFE_PB){ pos=c; break; } }
-        game.bots=[ new Bot(pos || randomFreePoint(game.obstacles, BOT_RADIUS)) ];
+        game.bots=[ new Bot(pos || randomFreePoint(game.obstacles, BOT_RADIUS), 'hunter') ];
       })();
       this.exitRect={x:W()*0.75-13,y:H()*0.5-13,w:26,h:26};
       this.mist=new ParticleMist(PARTICLE_COUNT, this.obstacles);
       this.trails.player=new Trail('#ffffff', 1500);
-      this.trails.bots=this.bots.map(()=>new Trail('#ff2a2a', 1200));
+      const colorOfF=(k)=> k==='tele'?'#bb66ff': k==='eater'?'#ffaa44': k==='cloner'?'#66ffee': k==='grower'?'#ff66aa': k==='phase'?'#99ff99': k==='mimic'?'#ffffff': k==='turret'?'#ffbbcc': k==='stalker'?'#66aaff':'#ff2a2a';
+      this.trails.bots=this.bots.map(b=>new Trail(colorOfF(b.kind), 1200));
       this.effects.length=0;
       for(const b of this.bots){ b.setPatrol(this.grid); this.prevBotStates.set(b, b.state); }
       this.bg.x=this.player.x; this.bg.y=this.player.y; this.fractal.randomize();
       // Power-ups per level
       this.powerUps=[];
-      const types=['slow','cull','shield','freeze','dash'];
+      const types=['slow','cull','shield','freeze','dash','predator'];
       const puCount = Math.min(4, 2 + Math.floor(Math.random()*3));
       for(let i=0;i<puCount;i++){
         let pos=null, tries=0; const SAFE_PU=80;
@@ -586,25 +786,107 @@
     },
     resetLevel(){ this.buildLevel(this.level); },
     nextLevel(){ this.level++; this.buildLevel(this.level); this.showMessage("Matrix "+this.level+" loaded."); },
-    showMessage(text){
+    showMessage(text, onClose=null){
       overlay.style.display='flex'; overlayText.innerHTML=text+'<div style="margin-top:8px; opacity:.75">Tap or key to continue</div>';
       const hide=()=>{ overlay.style.display='none'; window.removeEventListener('keydown', hideOnce, true); window.removeEventListener('pointerdown', hideOnce, true); };
-      const hideOnce=()=>{ this.audio.init(); hide(); };
+      const hideOnce=()=>{ this.audio.init(); hide(); if(typeof onClose==='function') { onClose(); } };
       window.addEventListener('keydown', hideOnce, true); window.addEventListener('pointerdown', hideOnce, true); setTimeout(hide, 2200);
     },
     onFps(fps){ if(fps<48) this.mist.setActive(2200); else if(fps<54) this.mist.setActive(3000); else this.mist.setActive(PARTICLE_COUNT); },
+    startNewRun(){
+      // Increment and persist runs
+      this.runs = Number(safeGet('hide_runs')||0) + 1;
+      safeSet('hide_runs', String(this.runs));
+      // Reset to Matrix 1 with updated difficulty scaling
+      this.level = 1; this.buildLevel(this.level);
+      this.showMessage("New Run #"+this.runs+". Good luck!");
+      this.running=true;
+    },
     update(dt){
       this.time+=dt; hudLevel.textContent='Matrix '+this.level; const cfg=this.cfg;
+      // Process up to two deferred pathfinding tasks per frame
+      for(let i=0;i<2 && this.pfQueue && this.pfQueue.length;i++){
+        const task=this.pfQueue.shift();
+        if(this.grid){
+          let p=this.grid.findPath(task.sx,task.sy,task.tx,task.ty);
+          // Decimate very long paths to reduce draw/update cost
+          if(p && p.length>80){ const stride=Math.ceil(p.length/80); p=p.filter((_,idx)=> idx%stride===0); if(p[p.length-1].x!==task.tx||p[p.length-1].y!==task.ty) p.push({x:task.tx,y:task.ty}); }
+          if(p&&p.length>1){ task.bot.path=p; task.bot.pathIndex=1; task.bot.pathTimer=0; }
+          task.bot.state='chase'; task.bot.lastSeen={x:task.tx,y:task.ty};
+        }
+      }
       this.player.update(dt,cfg,this.obstacles);
       // Update bots and mist
       const playerSp=Math.hypot(this.player.vx,this.player.vy); const moveFactor = playerSp>5 ? 1 : 0;
-      // Effect timers
-      if(this.slowTimer>0){ this.slowTimer-=dt; if(this.slowTimer<=0){ this.botSpeedMul=1; } }
-      if(this.freezeTimer>0){ this.freezeTimer-=dt; }
-      if(this.dashTimer>0){ this.dashTimer-=dt; }
+      // Movement sound: play when starting to move after being still; stop when stopping or game not running
+      const isMovingNow = playerSp>20;
+      if(isMovingNow && !this.wasMoving && this.audio && this.audio.loaded){ this.audio.playMovement(); }
+      if((!isMovingNow || !this.running) && this.wasMoving && this.audio){ this.audio.stopMovement(); }
+      this.wasMoving = isMovingNow;
+      // Step dynamic obstacles (moving/teleporting) based on player movement
+      this.stepObstacles(dt, playerSp);
+      // Effect timers (tied to player movement)
+      const dtm = dt * moveFactor;
+      if(this.slowTimer>0){ this.slowTimer-=dtm; if(this.slowTimer<=0){ this.botSpeedMul=1; } }
+      if(this.freezeTimer>0){ this.freezeTimer-=dtm; }
+      if(this.dashTimer>0){ this.dashTimer-=dtm; }
+      if(this.predatorTimer>0){ this.predatorTimer-=dtm; if(this.predatorTimer<=0){ this.predator=false; } }
+      // Timer sound: start when any power-up timer becomes active; stop when all end
+      const anyTimerActive = (this.slowTimer>0) || (this.freezeTimer>0) || (this.dashTimer>0) || (this.predatorTimer>0);
+      if(anyTimerActive && !this.anyTimerActivePrev){ this.audio.startTimerLoop(); }
+      if((!anyTimerActive || !this.running) && this.anyTimerActivePrev){ this.audio.stopTimerLoop(); }
+      this.anyTimerActivePrev = anyTimerActive;
       const freezeScale = (this.freezeTimer>0)?0:1;
       for(const b of this.bots){ var beforeState=this.prevBotStates.get(b)||b.state; b.update(dt*moveFactor*freezeScale,this.player,this.obstacles,cfg,this.grid, playerSp*this.botSpeedMul); this.prevBotStates.set(b,b.state); }
       this.mist.step(dt,this.player,this.bots[0]||{x:0,y:0});
+      // Kind-specific bot behaviors
+      for(let i=0;i<this.bots.length;i++){
+        const b=this.bots[i];
+        // Teleporting sentry: if it sees player, can teleport closer and chase
+        if(b.kind==='tele'){
+          b.teleTimer -= dtm;
+          const sees = b.canSee(this.player, this.obstacles, cfg);
+          if(sees && b.teleTimer<=0 && this.running){
+            // Teleport to a free spot near player
+            const R=90; let found=null; for(let t=0;t<80;t++){
+              const ang = Math.atan2(this.player.y-b.y,this.player.x-b.x) + (Math.random()*1.2-0.6);
+              const nx = this.player.x - Math.cos(ang)*R*(0.7+Math.random()*0.6);
+              const ny = this.player.y - Math.sin(ang)*R*(0.7+Math.random()*0.6);
+              let coll=false; for(const o of this.obstacles){ if(circleRectCollide(nx,ny,b.r+2,o)){ coll=true; break; } }
+              if(!coll){ found={x:nx,y:ny}; break; }
+            }
+            if(found){ this.effects.push(new Burst(b.x,b.y,'#bb66ff',180)); b.x=found.x; b.y=found.y; this.effects.push(new Burst(b.x,b.y,'#bb66ff',180)); b.state='chase'; b.lastSeen={x:this.player.x,y:this.player.y}; }
+            b.teleTimer = 3.0 + Math.random()*3.0;
+          }
+        }
+        // Eater: periodically carves obstacles it touches to create passages (rare)
+        if(b.kind==='eater'){
+          b.eatTimer -= dtm; if(b.eatTimer<=0){
+            const sp=Math.hypot(b.vx,b.vy)||1; const nx=b.vx/sp, ny=b.vy/sp; const bx=b.x+nx*(b.r+6), by=b.y+ny*(b.r+6);
+            if(this.carveAt(bx,by, 10)) { this.effects.push(new Burst(bx,by,'#ffffff',120)); this.grid = new Grid(this.obstacles, BOT_RADIUS); }
+            b.eatTimer = 0.18;
+          }
+        }
+        // Cloner: clones self every ~5s, limited
+        if(b.kind==='cloner'){
+          b.cloneTimer -= dtm; if(b.cloneTimer<=0 && this.bots.length<30){
+            b.clones = (b.clones||0); if(b.clones<2){
+              let pos=null; for(let t=0;t<60;t++){
+                const ang=Math.random()*Math.PI*2, rad=40+Math.random()*40; const nx=b.x+Math.cos(ang)*rad, ny=b.y+Math.sin(ang)*rad;
+                let coll=false; for(const o of this.obstacles){ if(circleRectCollide(nx,ny,BOT_RADIUS+2,o)){ coll=true; break; } }
+                if(!coll){ pos={x:nx,y:ny}; break; }
+              }
+              if(pos){ const nb=new Bot(pos,'cloner'); this.bots.push(nb); const colorOf=(k)=> k==='tele'?'#bb66ff': k==='eater'?'#ffaa44': k==='cloner'?'#66ffee': k==='grower'?'#ff66aa': k==='phase'?'#99ff99': k==='mimic'?'#ffffff': k==='turret'?'#ffbbcc': k==='stalker'?'#66aaff':'#ff2a2a'; this.trails.bots.push(new Trail(colorOf(nb.kind), 500)); this.effects.push(new Burst(pos.x,pos.y,'#66ffee',160)); }
+              b.clones++;
+            }
+            b.cloneTimer = 4.5 + Math.random()*2.5;
+          }
+        }
+        // Grower: slowly increases radius
+        if(b.kind==='grower'){
+          if(b.r < b.growMax){ b.r += dtm*2.0; }
+        }
+      }
       // Power-up pickups
       if(this.powerUps && this.powerUps.length){
         for(let i=this.powerUps.length-1;i>=0;i--){
@@ -614,24 +896,40 @@
             // Apply effect
             switch(pu.type){
               case 'slow':
-                this.botSpeedMul = 0.5; this.slowTimer = 4.0; break;
+                this.botSpeedMul = 0.5; this.slowTimer = 4.0;
+                this.effects.push(new Burst(pu.x, pu.y, '#bbbbbb', 180));
+                this.audio.tone(260,0.08,'triangle',0.03,0.003,0.06);
+                break;
               case 'freeze':
-                this.freezeTimer = 2.5; break;
+                this.freezeTimer = 2.5;
+                this.effects.push(new Burst(pu.x, pu.y, '#e0e0ff', 200));
+                this.audio.tone(640,0.06,'square',0.03,0.001,0.05);
+                break;
               case 'dash':
-                this.dashTimer = 2.2; break;
+                this.dashTimer = 2.2;
+                this.effects.push(new Burst(pu.x, pu.y, '#ffffff', 220));
+                this.audio.tone(920,0.04,'sawtooth',0.035,0.002,0.04);
+                break;
               case 'shield':
-                this.shield = (this.shield||0) + 1; break;
+                this.shield = (this.shield||0) + 1;
+                this.effects.push(new Burst(pu.x, pu.y, '#ccffdd', 220));
+                this.audio.tone(480,0.07,'sine',0.04,0.002,0.05);
+                break;
               case 'cull': {
                 if(this.bots.length>0){
-                  const idx=Math.floor(Math.random()*this.bots.length);
-                  this.bots.splice(idx,1);
-                  if(this.trails && this.trails.bots && this.trails.bots.length>idx){ this.trails.bots.splice(idx,1); }
+                  // Kill nearest bot to player
+                  let bestI=0, bestD=Infinity;
+                  for(let bi=0; bi<this.bots.length; bi++){
+                    const b=this.bots[bi]; const d=dist2(this.player.x,this.player.y,b.x,b.y);
+                    if(d<bestD){ bestD=d; bestI=bi; }
+                  }
+                  const dead=this.bots.splice(bestI,1)[0];
+                  if(this.trails && this.trails.bots && this.trails.bots.length>bestI){ this.trails.bots.splice(bestI,1); }
+                  if(dead){ this.effects.push(new Burst(dead.x, dead.y, '#ffcccc', 260)); }
                 }
+                this.audio.tone(180,0.09,'square',0.05,0.001,0.06);
                 break; }
             }
-            // Visual + subtle sound
-            this.effects.push(new Burst(pu.x, pu.y, '#d0d0d0', 160));
-            this.audio.tone(520,0.05,'sine',0.025,0.0015,0.03);
             pu.dead=true; this.powerUps.splice(i,1);
           }
         }
@@ -652,7 +950,9 @@
       }
       for(let i=0;i<this.bots.length;i++){
         const b=this.bots[i]; const spB=Math.hypot(b.vx,b.vy); const tr=this.trails.bots[i];
-        if(tr && spB>8){
+        // Hide trail when 'phase' bot is invisible while moving
+        const phaseInvisible = (b.kind==='phase' && spB>5);
+        if(tr && spB>8 && !phaseInvisible){
           const head=Math.atan2(b.vy, b.vx); const n=7; const rad=b.r;
           for(let k=0;k<n;k++){
             const t=k/(n-1)-0.5; const ang=head + Math.PI + t*Math.PI;
@@ -681,14 +981,22 @@
           this.effects.push(new Burst(this.player.x, this.player.y, '#ffffff', 200));
           if(hitBot){ const cx=(this.player.x+hitBot.x)*0.5, cy=(this.player.y+hitBot.y)*0.5; this.effects.push(new Burst(cx, cy, '#ff2a2a', 220)); }
           this.audio.caught();
+          // Immediately stop movement/timer loops on caught
+          this.audio.stopMovement(); this.audio.stopTimerLoop?.();
         }
-        this.running=false; this.showMessage("Caught. Press R or tap overlay to restart.");
+        this.running=false; this.showMessage("Caught. Tap to start a new run or press R.", ()=>{ if(!this.running) this.startNewRun(); });
         }
       }
-      // Bot alert sound when switching into chase
-      for(const b of this.bots){ const prev=this.prevBotStates.get(b)||''; if(prev!=='chase' && b.state==='chase') this.audio.alert(); }
-      // Footstep cadence (reuse spP from above)
-      if(spP>80 && this.running){ if(this.time - this.lastStepTime > 0.22){ this.audio.step(); this.lastStepTime=this.time; } }
+      // Bot alert sound when switching into chase, and occasional ambush coordination
+      for(let bi=0; bi<this.bots.length; bi++){
+        const b=this.bots[bi]; const prev=this.prevBotStates.get(b)||'';
+        if(prev!=='chase' && b.state==='chase'){
+          this.audio.alert();
+          // With some chance, coordinate an ambush using other bots
+          if(Math.random()<0.35){ this.planAmbush(b); }
+        }
+      }
+      // Footstep cadence disabled (replaced by movement.mp3)
       if(hudStatus){
         if(this.debug){
           const chasing=this.bots.filter(b=>b.state==='chase').length;
@@ -709,7 +1017,10 @@
     },
     draw(){
       ctx.clearRect(0,0,canvas.width,canvas.height); this.drawBackground(); this.mist.draw(ctx);
-      ctx.save(); ctx.fillStyle='#ffffff'; for(const o of this.obstacles){ ctx.fillRect(o.x*scale,o.y*scale,o.w*scale,o.h*scale); } ctx.restore();
+      // Fancy obstacle rendering: misty animated white blocks
+      ctx.save();
+      for(const o of this.obstacles){ this.drawObstacle(ctx, o, this.time); }
+      ctx.restore();
       ctx.save(); const pulse=1+0.06*Math.sin(this.time*4); ctx.lineWidth=2*scale*pulse; ctx.strokeStyle='#ffffff'; ctx.setLineDash([6*scale,10*scale]); ctx.lineDashOffset=-this.time*60*scale;
       ctx.strokeRect(this.exitRect.x*scale,this.exitRect.y*scale,this.exitRect.w*scale,this.exitRect.h*scale); ctx.setLineDash([]); ctx.restore();
       // Power-ups
@@ -717,8 +1028,50 @@
       // Trails behind entities
       this.trails.player?.draw(ctx); for(const tr of this.trails.bots){ tr.draw(ctx); }
       this.player.draw(ctx); for(const b of this.bots){ b.draw(ctx); }
+      // In-world power-up duration rings around player
+      if(this.slowTimer>0||this.freezeTimer>0||this.dashTimer>0||this.predatorTimer>0){
+        const px=this.player.x*scale, py=this.player.y*scale, rr=this.player.r*scale+8*scale; ctx.save(); ctx.lineWidth=3*scale; ctx.globalAlpha=0.95; ctx.lineCap='round';
+        const ring=(timer,total,col,ofs)=>{ if(!(timer>0&&total)) return; const frac=Math.max(0,Math.min(1,timer/total)); ctx.strokeStyle=col; const a0=ofs+this.time*1.6, a1=a0+frac*Math.PI*2; ctx.beginPath(); ctx.arc(px,py,rr, a0, a1); ctx.stroke(); };
+        ring(this.slowTimer,this.slowTotal,'#bbbbbb',0);
+        ring(this.freezeTimer,this.freezeTotal,'#bbddff',Math.PI*0.33);
+        ring(this.dashTimer,this.dashTotal,'#ffffff',Math.PI*0.66);
+        ring(this.predatorTimer,this.predatorTotal,'#ffffff',Math.PI*1.0);
+        ctx.restore();
+      }
       // Foreground effects
       for(const ef of this.effects){ ef.draw(ctx); }
+      // Predator invert overlay
+      if(this.predator && this.predatorTimer>0){ ctx.save(); ctx.globalCompositeOperation='difference'; ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.restore(); }
+      // HUD timers (top-left bars)
+      const bars=[];
+      if(this.slowTimer>0 && this.slowTotal){ bars.push({color:'#bbbbbb', frac:clamp(this.slowTimer/this.slowTotal,0,1)}); }
+      if(this.freezeTimer>0 && this.freezeTotal){ bars.push({color:'#bbddff', frac:clamp(this.freezeTimer/this.freezeTotal,0,1)}); }
+      if(this.dashTimer>0 && this.dashTotal){ bars.push({color:'#ffffff', frac:clamp(this.dashTimer/this.dashTotal,0,1)}); }
+      if(this.predatorTimer>0 && this.predatorTotal){ bars.push({color:'#ffffff', frac:clamp(this.predatorTimer/this.predatorTotal,0,1)}); }
+      if(bars.length){
+        const bw=110*scale, bh=6*scale, pad=6*scale, x0=10*scale, y0=10*scale;
+        ctx.save(); ctx.globalAlpha=0.9;
+        for(let i=0;i<bars.length;i++){
+          const b=bars[i], y=y0+i*(bh+pad);
+          // Background track
+          ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(x0,y,bw,bh);
+          // Filled portion
+          const fw = bw*b.frac; ctx.fillStyle=b.color; ctx.fillRect(x0,y,fw,bh);
+          // Animated countdown stripes over the filled portion
+          ctx.save(); ctx.beginPath(); ctx.rect(x0,y,fw,bh); ctx.clip();
+          const stripeW=8*scale, gap=10*scale, speed=60*scale; const off=(this.time*speed)% (stripeW+gap);
+          ctx.globalAlpha=0.28; ctx.fillStyle='rgba(255,255,255,0.6)';
+          for(let sx=x0 - (stripeW+gap) + off; sx<x0+fw; sx+=stripeW+gap){
+            ctx.save(); ctx.translate(sx,y); ctx.transform(1,0,Math.tan(-Math.PI/6),1,0,0); // slight slant
+            ctx.fillRect(0,0,stripeW,bh);
+            ctx.restore();
+          }
+          ctx.restore();
+          // Border
+          ctx.save(); ctx.globalAlpha=0.5; ctx.strokeStyle='#ffffff'; ctx.strokeRect(x0+0.5,y+0.5,fw-1,bh-1); ctx.restore();
+        }
+        ctx.restore();
+      }
       if(this.debug){
         // Draw bots' FOV and paths
         for(const b of this.bots){
@@ -735,7 +1088,10 @@
           if(b.path && b.path.length>1){
             ctx.save(); ctx.strokeStyle='#66ccff'; ctx.globalAlpha=0.6; ctx.lineWidth=1.5*scale; ctx.beginPath();
             ctx.moveTo(b.x*scale, b.y*scale);
-            for(const n of b.path){ ctx.lineTo(n.x*scale, n.y*scale); }
+            const stride = Math.max(1, Math.ceil(b.path.length/80));
+            for(let i=0;i<b.path.length;i+=stride){ const n=b.path[i]; ctx.lineTo(n.x*scale, n.y*scale); }
+            // ensure last point
+            const last=b.path[b.path.length-1]; ctx.lineTo(last.x*scale,last.y*scale);
             ctx.stroke(); ctx.restore();
           }
         }
@@ -743,6 +1099,185 @@
       if(joystick.active){ const baseA=0.2, knobA=0.35; ctx.save(); ctx.fillStyle='rgba(255,255,255,'+baseA+')'; ctx.beginPath(); ctx.arc(joystick.cx*scale,joystick.cy*scale,joystick.radius*scale,0,Math.PI*2); ctx.fill();
         ctx.fillStyle='rgba(255,255,255,'+knobA+')'; ctx.beginPath(); ctx.arc(joystick.x*scale,joystick.y*scale,(joystick.radius*0.45)*scale,0,Math.PI*2); ctx.fill(); ctx.restore(); }
     }
+  };
+
+  // Fancy obstacle draw and behavior helpers
+  game.drawObstacle = function(ctx, o, time){
+    const x=o.x*scale, y=o.y*scale, w=o.w*scale, h=o.h*scale;
+    // Shaking pre-telegraph jitter
+    let jx=0, jy=0; if(o.type==='tele' && o.shake>0){ const s=3*scale; jx=(Math.random()*2-1)*s; jy=(Math.random()*2-1)*s; }
+    // Animated gradient that drifts over time
+    const t=time + (o.phase||0);
+    const gx0=x + (Math.sin(t*0.7)*0.2+0.3)*w;
+    const gy0=y + (Math.cos(t*0.6)*0.2+0.3)*h;
+    const gx1=x + (Math.sin(t*1.1+1.7)*0.2+0.7)*w;
+    const gy1=y + (Math.cos(t*0.9+0.9)*0.2+0.7)*h;
+    // Base: pure white block
+    ctx.fillStyle='#ffffff';
+    ctx.fillRect(x+jx,y+jy,w,h);
+    // Overlay: white-only transparent gradient (no greys)
+    const g=ctx.createLinearGradient(gx0,gy0,gx1,gy1);
+    g.addColorStop(0.00,'rgba(255,255,255,0.00)');
+    g.addColorStop(0.35,'rgba(255,255,255,0.12)');
+    g.addColorStop(0.65,'rgba(255,255,255,0.22)');
+    g.addColorStop(1.00,'rgba(255,255,255,0.34)');
+    ctx.fillStyle=g;
+    ctx.fillRect(x+jx,y+jy,w,h);
+    // Flicker overlay: sample nearby enemies within ~2 grid cells of obstacle center
+    const cx=o.x+o.w*0.5, cy=o.y+o.h*0.5; const nearR=GRID_SIZE*2;
+    const cols=[];
+    for(let bi=0; bi<this.bots.length; bi++){
+      const b=this.bots[bi]; const d=Math.hypot(b.x-cx,b.y-cy); if(d<=nearR){ cols.push(botColor(b.kind)); if(cols.length>4) break; }
+    }
+    if(cols.length){
+      const seed=(Math.sin((o.x*13.37+o.y*7.91)/123.4)+1)*0.5;
+      for(let i=0;i<cols.length;i++){
+        const flick=0.18+0.18*Math.abs(Math.sin(time*6.0 + seed + i*1.7));
+        ctx.save(); ctx.globalAlpha=flick; ctx.fillStyle=cols[i]; ctx.fillRect(x+jx,y+jy,w,h); ctx.restore();
+      }
+    }
+    // Soft inner glow
+    ctx.save(); ctx.globalAlpha=0.30; ctx.strokeStyle='#ffffff'; ctx.lineWidth=2*scale; ctx.strokeRect(x+jx+1,y+jy+1,w-2,h-2); ctx.restore();
+    // Static overlay
+    const area=w*h, density = Math.min(120, Math.max(12, area/12000));
+    ctx.save(); ctx.globalAlpha=0.05;
+    for(let k=0;k<density;k++){
+      const sx = x + Math.random()*w; const sy = y + Math.random()*h; const sw= (0.5+Math.random()*1.5)*scale, sh=(0.5+Math.random()*1.5)*scale;
+      ctx.fillStyle='rgba(255,255,255,'+(0.15+Math.random()*0.25)+')'; ctx.fillRect(sx,sy,sw,sh);
+    }
+    ctx.restore();
+  };
+
+  game.stepObstacles = function(dt, playerSp){
+    const moved = playerSp>5 ? 1 : 0; let teleported=false;
+    for(const o of this.obstacles){
+      if(o.type==='move' && moved){
+        if(o.offset===undefined){ o.offset=0; o.dir=(Math.random()<0.5?-1:1); }
+        const v = playerSp * (o.speedMul||0.25);
+        // Propose next offset and position
+        const nextOff = o.offset + o.dir * v * dt;
+        const clampedOff = Math.max(-o.range, Math.min(o.range, nextOff));
+        const nx = (o.axis==='x') ? (o.baseX + clampedOff) : o.x;
+        const ny = (o.axis==='y') ? (o.baseY + clampedOff) : o.y;
+        const cand={x:nx,y:ny,w:o.w,h:o.h};
+        let overlaps=false;
+        for(const other of this.obstacles){ if(other===o) continue; if(!(cand.x+cand.w<=other.x || other.x+other.w<=cand.x || cand.y+cand.h<=other.y || other.y+other.h<=cand.y)){ overlaps=true; break; } }
+        if(overlaps){
+          // Reverse direction and do not advance into overlap
+          o.dir *= -1;
+        } else {
+          o.offset = clampedOff;
+          if(o.axis==='x'){ o.x = nx; } else { o.y = ny; }
+        }
+      } else if(o.type==='tele'){
+        // Countdown only when player is moving to keep fairness
+        if(moved){ o.timer -= dt; }
+        if(o.shake>0){ o.shake -= dt; if(o.shake<0) o.shake=0; }
+        if(o.timer<=0 && o.shake===0){
+          // Start shake telegraph
+          o.shake = 3.0; o.timer = -1; // shake for 3s, then teleport
+        } else if(o.timer<0 && o.shake===0){
+          // Perform teleport: find a new grid-aligned spot
+          const cs=GRID_SIZE; let found=null; for(let tries=0; tries<200; tries++){
+            const cw=Math.max(1, Math.round(o.w/cs)), ch=Math.max(1, Math.round(o.h/cs));
+            const gx=2+Math.floor(Math.random()*(Math.floor(W()/cs)-cw-4));
+            const gy=2+Math.floor(Math.random()*(Math.floor(H()/cs)-ch-4));
+            const nx=gx*cs, ny=gy*cs; const cand={x:nx,y:ny,w:o.w,h:o.h};
+            let coll=false;
+            // Avoid overlapping others, player, bots, and exit
+            for(const other of this.obstacles){ if(other===o) continue; if(!(cand.x-2+cand.w+4<other.x||other.x+other.w<cand.x-2||cand.y-2+cand.h+4<other.y||other.y+other.h<cand.y-2)){ coll=true; break; } }
+            if(coll) continue;
+            if(circleRectCollide(this.player.x,this.player.y,this.player.r+4,cand)) { coll=true; }
+            if(!coll){ for(const b of this.bots){ if(circleRectCollide(b.x,b.y,b.r+4,cand)){ coll=true; break; } } }
+            if(coll) continue;
+            if(rectsIntersect({x:cand.x-6,y:cand.y-6,w:cand.w+12,h:cand.h+12}, this.exitRect)) { coll=true; }
+            if(!coll){ found=cand; break; }
+          }
+          if(found){ o.x=found.x; o.y=found.y; teleported=true; }
+          // Reset timer
+          o.timer = 1.5 + Math.random()*2.5; // faster teleports
+        }
+      }
+    }
+    if(teleported){ this.grid = new Grid(this.obstacles, BOT_RADIUS); }
+  };
+
+  // Carve a passage through an obstacle at world point (cx,cy).
+  // Creates a vertical or horizontal slit (grid-sized) by splitting the rect into up to two parts.
+  game.carveAt = function(cx, cy, size=GRID_SIZE){
+    for(let i=0;i<this.obstacles.length;i++){
+      const o=this.obstacles[i];
+      if(cx>=o.x && cx<=o.x+o.w && cy>=o.y && cy<=o.y+o.h){
+        const MIN = GRID_SIZE*1.0; // avoid tiny slivers
+        let made=false;
+        const slit = Math.max(GRID_SIZE*0.9, size);
+        const newObs=[];
+        if(o.w >= o.h){
+          // Vertical slit at cx
+          const leftW = (cx - o.x) - slit*0.5;
+          const rightW = (o.x+o.w - cx) - slit*0.5;
+          if(leftW > MIN){ newObs.push({x:o.x, y:o.y, w:leftW, h:o.h, type:o.type}); }
+          if(rightW > MIN){ newObs.push({x:cx+slit*0.5, y:o.y, w:rightW, h:o.h, type:o.type}); }
+          made = (newObs.length>0);
+        } else {
+          // Horizontal slit at cy
+          const topH = (cy - o.y) - slit*0.5;
+          const botH = (o.y+o.h - cy) - slit*0.5;
+          if(topH > MIN){ newObs.push({x:o.x, y:o.y, w:o.w, h:topH, type:o.type}); }
+          if(botH > MIN){ newObs.push({x:o.x, y:cy+slit*0.5, w:o.w, h:botH, type:o.type}); }
+          made = (newObs.length>0);
+        }
+        if(made){
+          // Replace obstacle with the split pieces
+          this.obstacles.splice(i,1, ...newObs);
+          return true;
+        }
+        return false;
+      }
+    }
+    return false;
+  };
+
+  // Coordinate an ambush: some bots reposition to cut off the player
+  game.planAmbush = function(triggerBot){
+    if(!this.grid || this.bots.length<2) return;
+    if(this.time - (this.lastAmbushTime||-99) < 4.0) return; // throttle
+    this.lastAmbushTime = this.time;
+    const px=this.player.x, py=this.player.y;
+    const pvx=this.player.vx, pvy=this.player.vy; const sp=Math.hypot(pvx,pvy);
+    const nx = sp>1 ? pvx/sp : 1, ny = sp>1 ? pvy/sp : 0; // heading
+    // Build target ring around player
+    const R=120; const offsets = sp>1
+      ? [ [nx,ny], [ -ny, nx ], [ ny, -nx ] ]
+      : [ [1,0], [0,1], [-1,0] ];
+    // Choose up to 2 other bots to reposition
+    const candidates=this.bots.filter(b=>b!==triggerBot);
+    const pick=candidates.slice(0,2);
+    let assigned=0;
+    for(const b of pick){
+      const off = offsets[Math.min(assigned, offsets.length-1)]; assigned++;
+      let tx = px + off[0]*R, ty = py + off[1]*R;
+      // Snap to nearest free grid cell
+      const cell=this.grid.cellOf(tx,ty);
+      let best=this.grid.inBounds(cell.gx,cell.gy)&&!this.grid.isBlocked(cell.gx,cell.gy)? {gx:cell.gx, gy:cell.gy}: null;
+      if(!best){
+        // spiral search nearby
+        const maxR=6; outer: for(let r=1;r<=maxR;r++){
+          for(let dy=-r; dy<=r; dy++) for(let dx=-r; dx<=r; dx++){
+            const gx=cell.gx+dx, gy=cell.gy+dy; if(!this.grid.inBounds(gx,gy)) continue; if(this.grid.isBlocked(gx,gy)) continue; best={gx,gy}; break outer;
+          }
+        }
+      }
+      if(best){
+        const wp=this.grid.toWorld(best.gx,best.gy);
+        // Defer path compute to avoid frame spike
+        if(this.pfQueue.length<6){
+          this.pfQueue.push({bot:b, sx:b.x, sy:b.y, tx:wp.x, ty:wp.y});
+        }
+      }
+    }
+    // subtle visual hint
+    this.effects.push(new Burst(px, py, '#ff8a8a', 140));
   };
 
   let last=performance.now(), acc=0; const DT=1/60; let frames=0, fps=0, fpsTimer=0;
