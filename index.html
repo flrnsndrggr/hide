@@ -587,10 +587,10 @@
       this.searchPoints=pts; this.currentSearch=0;
     }
     update(dt, player, obstacles, cfg, grid, playerSp=0){
-      // If player isn't moving, dt may be 0 (moveFactor). Stop immediately.
-      if(!(dt>0)) { this.vx = 0; this.vy = 0; return; }
-      // Normal bot speed should be 98% of player speed
-      const baseBotSpeed = (cfg.playerMaxSpeed * 0.98) * ((typeof game!=='undefined' && game.botSpeedMul) ? game.botSpeedMul : 1);
+      // If player isn't moving, dt may be 0 (moveFactor). Stop movement but keep logic alive.
+      if(!(dt>0)) { this.vx = 0; this.vy = 0; /* continue to process state/timers without movement */ }
+      // Baseline sentry speed: 95% of player speed
+      const baseBotSpeed = (cfg.playerMaxSpeed * 0.95) * ((typeof game!=='undefined' && game.botSpeedMul) ? game.botSpeedMul : 1);
       this.speed = baseBotSpeed; // no slowdown for hunter; other kinds may modify later
       const canTick = dt>0;
       const seenNow = (this.kind==='stalker') ? true : this.canSee(player,obstacles,cfg);
@@ -812,15 +812,21 @@
           task.bot.state='chase'; task.bot.lastSeen={x:task.tx,y:task.ty};
         }
       }
+      // Determine current input intent (ignores player's residual inertia)
+      const ivNow = inputVector();
+      const inputActive = !!(ivNow[0] || ivNow[1]);
       this.player.update(dt,cfg,this.obstacles);
-      const playerSp=Math.hypot(this.player.vx,this.player.vy); const moveFactor = playerSp>5 ? 1 : 0;
-      const isMovingNow = playerSp>20;
+      const playerSp=Math.hypot(this.player.vx,this.player.vy);
+      const moveFactor = inputActive ? 1 : 0; // stop bots immediately when input stops
+      const isMovingNow = inputActive && playerSp>20;
       if(isMovingNow && !this.wasMoving && this.audio && this.audio.loaded){ this.audio.playMovement(); }
       if((!isMovingNow || !this.running) && this.wasMoving && this.audio){ this.audio.stopMovement(); }
       this.wasMoving = isMovingNow;
 
       this.stepObstacles(dt, playerSp);
       const dtm = dt * moveFactor;
+      // Additional guarantee: when input stops, instantly clear bot velocities
+      if(!inputActive){ for(const b of this.bots){ b.vx=0; b.vy=0; } }
       if(this.slowTimer>0){ this.slowTimer-=dtm; if(this.slowTimer<=0){ this.botSpeedMul=1; } }
       if(this.freezeTimer>0){ this.freezeTimer-=dtm; }
       if(this.dashTimer>0){ this.dashTimer-=dtm; }
