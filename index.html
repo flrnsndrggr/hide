@@ -18,7 +18,8 @@
       touch-action: none; overscroll-behavior: none;
       -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
     }
-    body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+    /* Let canvas cover full screen including safe areas; HUD already accounts for insets */
+    body { padding: 0; }
     #hud { position: fixed; left: env(safe-area-inset-left); top: env(safe-area-inset-top); right: env(safe-area-inset-right);
       display: flex; justify-content: space-between; padding: 8px 12px; font-size: clamp(12px, 1.8vw, 16px); pointer-events: none; opacity: .85; z-index: 10; }
     canvas { display: block; width: 100vw; height: 100dvh; background: #000; }
@@ -77,7 +78,12 @@
 
   const joystick = { active:false, cx:0, cy:0, x:0, y:0, radius:84, dead:10, max:72, vec:[0,0], mag:0 };
   function pointerPos(e){ const t=e.touches?e.touches[0]:e; const r=canvas.getBoundingClientRect(); return {x:t.clientX-r.left, y:t.clientY-r.top}; }
-  function startJoy(e){ const p=pointerPos(e); if(p.x<=canvas.clientWidth*0.7){ joystick.active=true; joystick.cx=p.x; joystick.cy=p.y; joystick.x=p.x; joystick.y=p.y; joystick.vec=[0,0]; joystick.mag=0; } }
+  function startJoy(e){
+    // Start joystick anywhere on the canvas (improves mobile edge responsiveness)
+    if(game?.overlayActive) return; // don't start under overlay
+    const p=pointerPos(e);
+    joystick.active=true; joystick.cx=p.x; joystick.cy=p.y; joystick.x=p.x; joystick.y=p.y; joystick.vec=[0,0]; joystick.mag=0;
+  }
   function moveJoy(e){
     if(!joystick.active) return;
     const p=pointerPos(e); const dx=p.x-joystick.cx, dy=p.y-joystick.cy; const d=Math.hypot(dx,dy); const ang=Math.atan2(dy,dx);
@@ -267,8 +273,9 @@
       }
       if(!ok) continue;
       const lvl=game?.level||1;
-      const pMove = Math.min(0.15, 0.05 + lvl*0.01);
-      const pTele = Math.min(0.12, 0.04 + lvl*0.008);
+      // Increase chance of moving blocks so maps feature more of them
+      const pMove = Math.min(0.35, 0.12 + lvl*0.02);
+      const pTele = Math.min(0.10, 0.04 + lvl*0.006);
       const roll=Math.random();
       if(roll < pMove){
         r.type='move';
@@ -580,9 +587,11 @@
       this.searchPoints=pts; this.currentSearch=0;
     }
     update(dt, player, obstacles, cfg, grid, playerSp=0){
-      const baseBotSpeed = (cfg.botSpeed||120) * ((typeof game!=='undefined' && game.botSpeedMul) ? game.botSpeedMul : 1);
-      this.speed = baseBotSpeed;
-      if(this.kind==='hunter') this.speed *= 0.93;
+      // If player isn't moving, dt may be 0 (moveFactor). Stop immediately.
+      if(!(dt>0)) { this.vx = 0; this.vy = 0; return; }
+      // Normal bot speed should be 98% of player speed
+      const baseBotSpeed = (cfg.playerMaxSpeed * 0.98) * ((typeof game!=='undefined' && game.botSpeedMul) ? game.botSpeedMul : 1);
+      this.speed = baseBotSpeed; // no slowdown for hunter; other kinds may modify later
       const canTick = dt>0;
       const seenNow = (this.kind==='stalker') ? true : this.canSee(player,obstacles,cfg);
       const heardNow = (this.kind==='stalker') ? false : this.canHear(player,cfg);
@@ -632,7 +641,7 @@
       }
     }
     followPath(dt, obstacles){
-      if(!this.path||this.pathIndex>=this.path.length){ this.vx*=0.9; this.vy*=0.9; this.x+=this.vx*dt; this.y+=this.vy*dt; return; }
+      if(!this.path||this.pathIndex>=this.path.length){ this.vx=0; this.vy=0; return; }
       const target=this.path[this.pathIndex]; const dx=target.x-this.x, dy=target.y-this.y; const d=Math.hypot(dx,dy); if(d<6){ this.pathIndex++; return; }
       const n=[dx/d, dy/d]; this.vx=n[0]*this.speed; this.vy=n[1]*this.speed;
       let nx=this.x+this.vx*dt, ny=this.y+this.vy*dt;
@@ -665,6 +674,7 @@
     level: 1,
     debug: false,
     running: false,
+    overlayActive: false,
     time: 0,
     cfg: null,
     player: null,
@@ -770,10 +780,11 @@
     resetLevel(){ this.buildLevel(this.level); },
     nextLevel(){ this.level++; this.buildLevel(this.level); this.showMessage("Matrix "+this.level+" loaded."); },
     showMessage(text, onClose=null){
+      this.overlayActive = true;
       overlay.style.display='flex';
       overlayText.innerHTML=text+'<div style="margin-top:8px; opacity:.75">Tap or key to continue</div>';
       const hide=()=>{ overlay.style.display='none'; window.removeEventListener('keydown', hideOnce, true); window.removeEventListener('pointerdown', hideOnce, true); };
-      const hideOnce=()=>{ this.audio.init(); hide(); if(typeof onClose==='function') { onClose(); } };
+      const hideOnce=()=>{ this.audio.init(); hide(); this.overlayActive = false; if(typeof onClose==='function') { onClose(); } };
       window.addEventListener('keydown', hideOnce, true); window.addEventListener('pointerdown', hideOnce, true); setTimeout(hide, 2200);
     },
     onFps(fps){ if(fps<48) this.mist.setActive(2200); else if(fps<54) this.mist.setActive(3000); else this.mist.setActive(PARTICLE_COUNT); },
@@ -786,6 +797,12 @@
     },
     update(dt){
       this.time+=dt; hudLevel.textContent='Matrix '+this.level; const cfg=this.cfg;
+      // Lock all simulation while overlay is visible
+      if(this.overlayActive){
+        this.audio.stopMovement?.();
+        this.wasMoving = false;
+        return;
+      }
       for(let i=0;i<2 && this.pfQueue && this.pfQueue.length;i++){
         const task=this.pfQueue.shift();
         if(this.grid){
@@ -939,7 +956,22 @@
       for(let i=this.effects.length-1;i>=0;i--){ const ef=this.effects[i]; ef.update(dt); if(ef.dead) this.effects.splice(i,1); }
       this.bg.x=lerp(this.bg.x,this.player.x,0.05); this.bg.y=lerp(this.bg.y,this.player.y,0.05);
       if(circleRectCollide(this.player.x,this.player.y,this.player.r,this.exitRect)){ this.audio.exit(); this.nextLevel(); }
-      let caught=false; let hitBot=null; for(const b of this.bots){ if(Math.hypot(this.player.x-b.x,this.player.y-b.y) < this.player.r+b.r-2){ caught=true; hitBot=b; break; } }
+      let caught=false; let hitBot=null;
+      // Predator effect: collisions destroy bots instead of catching the player
+      if(this.predator && this.predatorTimer>0){
+        for(let i=this.bots.length-1;i>=0;i--){
+          const b=this.bots[i];
+          if(Math.hypot(this.player.x-b.x,this.player.y-b.y) < this.player.r+b.r-2){
+            // Destroy bot
+            const cx=(this.player.x+b.x)*0.5, cy=(this.player.y+b.y)*0.5;
+            this.effects.push(new Burst(cx, cy, '#ffffff', 200));
+            this.audio?.tone?.(180,0.05,'square',0.05,0.002,0.03);
+            this.bots.splice(i,1);
+          }
+        }
+      } else {
+        for(const b of this.bots){ if(Math.hypot(this.player.x-b.x,this.player.y-b.y) < this.player.r+b.r-2){ caught=true; hitBot=b; break; } }
+      }
       if(caught){
         if(this.shield>0){
           this.shield--; const cx=(this.player.x+(hitBot?hitBot.x:this.player.x))*0.5, cy=(this.player.y+(hitBot?hitBot.y:this.player.y))*0.5;
@@ -1135,7 +1167,8 @@
     for(const o of this.obstacles){
       if(o.type==='move' && moved){
         if(o.offset===undefined){ o.offset=0; o.dir=(Math.random()<0.5?-1:1); }
-        const v = playerSp * (o.speedMul||0.25);
+        // Increase base speed of moving blocks; per-obstacle o.speedMul still respected
+        const v = playerSp * (o.speedMul||0.5);
         const nextOff = o.offset + o.dir * v * dt;
         const clampedOff = Math.max(-o.range, Math.min(o.range, nextOff));
         const nx = (o.axis==='x') ? (o.baseX + clampedOff) : o.x;
@@ -1158,7 +1191,9 @@
           // Arm a short shake before teleport
           o.shake = 0.9 + Math.random()*0.6; o.timer = -1; // negative means waiting for shake to finish
         } else if(o.timer<0 && o.shake===0){
-          const cs=GRID_SIZE; let found=null; for(let tries=0; tries<200; tries++){
+          const cs=GRID_SIZE; let found=null;
+          // Strict pass: avoid player, bots, exit, and other obstacles
+          for(let tries=0; tries<600; tries++){
             const cw=Math.max(1, Math.round(o.w/cs)), ch=Math.max(1, Math.round(o.h/cs));
             const gx=2+Math.floor(Math.random()*(Math.floor(W()/cs)-cw-4));
             const gy=2+Math.floor(Math.random()*(Math.floor(H()/cs)-ch-4));
@@ -1171,6 +1206,22 @@
             if(coll) continue;
             if(rectsIntersect({x:cand.x-6,y:cand.y-6,w:cand.w+12,h:cand.h+12}, this.exitRect)) { coll=true; }
             if(!coll){ found=cand; break; }
+          }
+          // Relaxed pass: ignore bot overlap to guarantee progress
+          if(!found){
+            for(let tries=0; tries<600; tries++){
+              const cw=Math.max(1, Math.round(o.w/cs)), ch=Math.max(1, Math.round(o.h/cs));
+              const gx=2+Math.floor(Math.random()*(Math.floor(W()/cs)-cw-4));
+              const gy=2+Math.floor(Math.random()*(Math.floor(H()/cs)-ch-4));
+              const nx=gx*cs, ny=gy*cs; const cand={x:nx,y:ny,w:o.w,h:o.h};
+              let coll=false;
+              for(const other of this.obstacles){ if(other===o) continue; if(!(cand.x-2+cand.w+4<other.x||other.x+other.w<cand.x-2||cand.y-2+cand.h+4<other.y||other.y+other.h<cand.y-2)){ coll=true; break; } }
+              if(coll) continue;
+              if(circleRectCollide(this.player.x,this.player.y,this.player.r+4,cand)) { coll=true; }
+              if(coll) continue;
+              if(rectsIntersect({x:cand.x-6,y:cand.y-6,w:cand.w+12,h:cand.h+12}, this.exitRect)) { coll=true; }
+              if(!coll){ found=cand; break; }
+            }
           }
           if(found){ o.x=found.x; o.y=found.y; teleported=true; }
           // Reset cooldown (prefer configured cooldown if available)
