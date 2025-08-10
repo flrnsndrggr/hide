@@ -723,8 +723,21 @@
       for(let i=0;i<otherCount;i++) kinds.push(otherKindsPool[Math.floor(Math.random()*otherKindsPool.length)]);
       // shuffle to distribute
       for(let i=kinds.length-1;i>0;i--){ const j=(Math.random()* (i+1))|0; [kinds[i],kinds[j]] = [kinds[j],kinds[i]]; }
+      // Enforce fair spawn distances
+      const minPlayerDist = Math.max(220, Math.min(420, this.cfg.botSightRange*0.6));
+      const minBotGap = BOT_RADIUS * 6; // spacing between bots
       for(const k of kinds){
-        const pos = randomFreePoint(this.obstacles, BOT_RADIUS);
+        let pos = null;
+        for(let tries=0; tries<400; tries++){
+          const cand = randomFreePoint(this.obstacles, BOT_RADIUS);
+          // Keep away from player
+          if(dist2(cand.x,cand.y,this.player.x,this.player.y) < (minPlayerDist*minPlayerDist)) continue;
+          // Keep some distance between bots
+          let close=false; for(const b of this.bots){ if(dist2(cand.x,cand.y,b.x,b.y) < (minBotGap*minBotGap)){ close=true; break; } }
+          if(close) continue;
+          pos = cand; break;
+        }
+        if(!pos) pos = randomFreePoint(this.obstacles, BOT_RADIUS);
         const b = new Bot(pos, k);
         this.bots.push(b);
         this.trails.bots.push(new Trail(botColor(b.kind), 300));
@@ -969,8 +982,34 @@
       ctx.save();
       for(const o of this.obstacles){ this.drawObstacle(ctx, o, this.time); }
       ctx.restore();
-      ctx.save(); const pulse=1+0.06*Math.sin(this.time*4); ctx.lineWidth=2*scale*pulse; ctx.strokeStyle='#ffffff'; ctx.setLineDash([6*scale,10*scale]); ctx.lineDashOffset=-this.time*60*scale;
-      ctx.strokeRect(this.exitRect.x*scale,this.exitRect.y*scale,this.exitRect.w*scale,this.exitRect.h*scale); ctx.setLineDash([]); ctx.restore();
+      // Rotating spiral exit
+      ctx.save();
+      const ex=this.exitRect.x*scale, ey=this.exitRect.y*scale, ew=this.exitRect.w*scale, eh=this.exitRect.h*scale;
+      const ecx=ex+ew*0.5, ecy=ey+eh*0.5; const es=Math.min(ew,eh);
+      ctx.translate(ecx, ecy);
+      ctx.rotate(this.time*0.9);
+      const turns = 4.5; // number of spiral turns
+      const maxR = es*0.48; const minR = es*0.06;
+      const a = minR; const b = (maxR-minR)/(Math.PI*2*turns);
+      ctx.lineWidth = 2.2*scale; ctx.strokeStyle = '#ffffff';
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      const steps = 360;
+      for(let i=0;i<=steps;i++){
+        const th = (i/steps) * (Math.PI*2*turns);
+        const r = a + b*th;
+        const x = Math.cos(th)*r;
+        const y = Math.sin(th)*r;
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+      // subtle rotating glow rings
+      ctx.globalAlpha = 0.18;
+      for(let k=0;k<3;k++){
+        const rr = maxR*(0.55 + 0.12*k*(1+0.2*Math.sin(this.time*2+k)));
+        ctx.beginPath(); ctx.arc(0,0, rr, 0, Math.PI*2); ctx.stroke();
+      }
+      ctx.restore();
       if(this.powerUps){ for(const pu of this.powerUps){ pu.draw(ctx, this.time); } }
       this.trails.player?.draw(ctx); for(const tr of this.trails.bots){ tr.draw(ctx); }
       this.player.draw(ctx); for(const b of this.bots){ b.draw(ctx); }
@@ -1111,10 +1150,13 @@
           if(o.axis==='x'){ o.x = nx; } else { o.y = ny; }
         }
       } else if(o.type==='tele'){
-        if(moved){ o.timer -= dt; }
+        // Always tick timer; move faster when the player is moving
+        const tick = moved ? 1.0 : 0.5;
+        o.timer -= dt * tick;
         if(o.shake>0){ o.shake -= dt; if(o.shake<0) o.shake=0; }
         if(o.timer<=0 && o.shake===0){
-          o.shake = 3.0; o.timer = -1;
+          // Arm a short shake before teleport
+          o.shake = 0.9 + Math.random()*0.6; o.timer = -1; // negative means waiting for shake to finish
         } else if(o.timer<0 && o.shake===0){
           const cs=GRID_SIZE; let found=null; for(let tries=0; tries<200; tries++){
             const cw=Math.max(1, Math.round(o.w/cs)), ch=Math.max(1, Math.round(o.h/cs));
@@ -1131,7 +1173,8 @@
             if(!coll){ found=cand; break; }
           }
           if(found){ o.x=found.x; o.y=found.y; teleported=true; }
-          o.timer = 1.5 + Math.random()*2.5;
+          // Reset cooldown (prefer configured cooldown if available)
+          o.timer = (o.cooldown || (1.5 + Math.random()*2.5));
         }
       }
     }
