@@ -169,6 +169,7 @@
         case 'shield': return '#dddddd';
         case 'freeze': return '#aaaaaa';
         case 'dash': return '#f0f0f0';
+        case 'predator': return '#ffffff';
         default: return '#ffffff';
       }
     }
@@ -179,6 +180,7 @@
         case 'shield': return 'P';
         case 'freeze': return 'F';
         case 'dash': return 'D';
+        case 'predator': return 'R';
         default: return '?';
       }
     }
@@ -685,6 +687,8 @@
       this.effects = [];
       this.trails = { player: new Trail('#ffffff', 600), bots: [] };
       this.powerUps = [];
+      // Bag for fair power-up distribution (ensures equal likelihood over small samples)
+      if(!this.powerUpBag) this.powerUpBag = [];
       this.pfQueue = [];
       this.prevBotStates = new Map();
       this.bg = { x: W()*0.5, y: H()*0.5 };
@@ -707,22 +711,39 @@
       this.exitRect = ex || { x: W()-exitSize-10, y: H()-exitSize-10, w: exitSize, h: exitSize };
 
       this.bots = [];
-      const baseKinds = ['hunter','hunter','stalker'];
-      for(const k of baseKinds){
-        const pos=randomFreePoint(this.obstacles,BOT_RADIUS);
-        const b=new Bot(pos,k);
+      // Spawn sentries: total equals current level. Baseline are red hunters; ~25% are other types.
+      const totalBots = Math.max(1, level|0);
+      const otherKindsPool = ['stalker','tele','eater','cloner','grower','phase','mimic','turret'];
+      let otherCount = Math.round(totalBots * 0.25);
+      if(otherCount >= totalBots) otherCount = Math.max(0, totalBots - 1); // ensure at least one hunter
+      const hunterCount = totalBots - otherCount;
+
+      const kinds = [];
+      for(let i=0;i<hunterCount;i++) kinds.push('hunter');
+      for(let i=0;i<otherCount;i++) kinds.push(otherKindsPool[Math.floor(Math.random()*otherKindsPool.length)]);
+      // shuffle to distribute
+      for(let i=kinds.length-1;i>0;i--){ const j=(Math.random()* (i+1))|0; [kinds[i],kinds[j]] = [kinds[j],kinds[i]]; }
+      for(const k of kinds){
+        const pos = randomFreePoint(this.obstacles, BOT_RADIUS);
+        const b = new Bot(pos, k);
         this.bots.push(b);
         this.trails.bots.push(new Trail(botColor(b.kind), 300));
       }
 
-      const types=['slow','freeze','shield','dash','cull'];
+      const ensureBag = ()=>{
+        if(!this.powerUpBag || this.powerUpBag.length===0){
+          this.powerUpBag = ['slow','freeze','shield','dash','cull','predator'];
+          for(let i=this.powerUpBag.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [this.powerUpBag[i],this.powerUpBag[j]]=[this.powerUpBag[j],this.powerUpBag[i]]; }
+        }
+      };
       for(let k=0;k<2;k++){
         const pos=randomFreePoint(this.obstacles,14);
         if(dist2(pos.x,pos.y,this.player.x,this.player.y) < (SAFE_PU+PLAYER_RADIUS+12)**2) { k--; continue; }
         let nearBot=false; for(const bp of this.bots){ if(dist2(pos.x,pos.y,bp.x,bp.y) < (SAFE_PU+BOT_RADIUS+12)**2){ nearBot=true; break; } }
         if(nearBot){ k--; continue; }
         if(circleRectCollide(pos.x,pos.y,14,this.exitRect)) { k--; continue; }
-        const type=types[Math.floor(Math.random()*types.length)];
+        ensureBag();
+        const type=this.powerUpBag.pop();
         this.powerUps.push(new PowerUp(pos.x, pos.y, type));
       }
 
@@ -730,7 +751,7 @@
       this.slowTimer=0; this.slowTotal=4.0;
       this.freezeTimer=0; this.freezeTotal=2.5;
       this.dashTimer=0; this.dashTotal=2.2;
-      this.predator=false; this.predatorTimer=0; this.predatorTotal=2.0;
+      this.predator=false; this.predatorTimer=0; this.predatorTotal=4.0;
       this.running=true;
     },
     resetLevel(){ this.buildLevel(this.level); },
@@ -863,6 +884,12 @@
                 }
                 this.audio.tone(180,0.09,'square',0.05,0.001,0.06);
                 break; }
+              case 'predator':
+                this.predator = true;
+                this.predatorTimer = this.predatorTotal;
+                this.effects.push(new Burst(pu.x, pu.y, '#ffffff', 260));
+                this.audio.tone(220,0.08,'sawtooth',0.04,0.002,0.05);
+                break;
             }
             pu.dead=true; this.powerUps.splice(i,1);
           }
@@ -1017,33 +1044,49 @@
     const gy0=y + (Math.cos(t*0.6)*0.2+0.3)*h;
     const gx1=x + (Math.sin(t*1.1+1.7)*0.2+0.7)*w;
     const gy1=y + (Math.cos(t*0.9+0.9)*0.2+0.7)*h;
-    ctx.fillStyle='#ffffff';
+    // Base unstable substrate
+    ctx.fillStyle='rgba(255,255,255,0.10)';
     ctx.fillRect(x+jx,y+jy,w,h);
     const g=ctx.createLinearGradient(gx0,gy0,gx1,gy1);
-    g.addColorStop(0.00,'rgba(255,255,255,0.00)');
-    g.addColorStop(0.35,'rgba(255,255,255,0.12)');
-    g.addColorStop(0.65,'rgba(255,255,255,0.22)');
-    g.addColorStop(1.00,'rgba(255,255,255,0.34)');
-    ctx.fillStyle=g;
-    ctx.fillRect(x+jx,y+jy,w,h);
-    const cx=o.x+o.w*0.5, cy=o.y+o.h*0.5; const nearR=GRID_SIZE*2;
-    const cols=[];
-    for(let bi=0; bi<this.bots.length; bi++){
-      const b=this.bots[bi]; const d=Math.hypot(b.x-cx,b.y-cy); if(d<=nearR){ cols.push(botColor(b.kind)); if(cols.length>4) break; }
+    g.addColorStop(0.00,'rgba(255,255,255,0.02)');
+    g.addColorStop(0.35,'rgba(255,255,255,0.06)');
+    g.addColorStop(0.65,'rgba(255,255,255,0.10)');
+    g.addColorStop(1.00,'rgba(255,255,255,0.14)');
+    ctx.fillStyle=g; ctx.fillRect(x+jx,y+jy,w,h);
+
+    // Closest sentry color + flicker
+    const cx=o.x+o.w*0.5, cy=o.y+o.h*0.5;
+    let nearest=null, nd=Infinity;
+    for(const b of this.bots){ const d=Math.hypot(b.x-cx,b.y-cy); if(d<nd){ nd=d; nearest=b; } }
+    const nearCol = nearest ? botColor(nearest.kind) : '#ffffff';
+    const distFactor = nearest ? Math.max(0, 1 - nd/(GRID_SIZE*6)) : 0; // stronger when close
+    const seed = (Math.sin((o.x*19.31 + o.y*11.73)/97.3)+1)*0.5;
+    const flick = 0.20 + 0.55*Math.abs(Math.sin(time*7.0 + seed*13.3))*(0.5+0.5*distFactor);
+
+    // Subtle jitter for instability (in addition to tele shake)
+    if(o.type!=='tele'){
+      const jAmp = (1.2 + 2.4*distFactor)*scale;
+      jx += (Math.random()*2-1)*jAmp*flick*0.5;
+      jy += (Math.random()*2-1)*jAmp*flick*0.5;
     }
-    if(cols.length){
-      const seed=(Math.sin((o.x*13.37+o.y*7.91)/123.4)+1)*0.5;
-      for(let i=0;i<cols.length;i++){
-        const flick=0.18+0.18*Math.abs(Math.sin(time*6.0 + seed + i*1.7));
-        ctx.save(); ctx.globalAlpha=flick; ctx.fillStyle=cols[i]; ctx.fillRect(x+jx,y+jy,w,h); ctx.restore();
-      }
-    }
-    ctx.save(); ctx.globalAlpha=0.30; ctx.strokeStyle='#ffffff'; ctx.lineWidth=2*scale; ctx.strokeRect(x+jx+1,y+jy+1,w-2,h-2); ctx.restore();
-    const area=w*h, density = Math.min(120, Math.max(12, area/12000));
-    ctx.save(); ctx.globalAlpha=0.05;
+
+    // Color glow fill and pulsing edge
+    ctx.save(); ctx.globalAlpha=flick*(0.55+0.35*distFactor); ctx.fillStyle=nearCol; ctx.fillRect(x+jx,y+jy,w,h); ctx.restore();
+    ctx.save(); ctx.globalAlpha=0.18 + 0.35*flick; ctx.strokeStyle=nearCol; ctx.lineWidth=2*scale; ctx.strokeRect(x+jx+1,y+jy+1,w-2,h-2); ctx.restore();
+
+    // Scanline/fragment flickers inside the obstacle
+    const area=w*h; const density = Math.min(140, Math.max(16, area/11000));
+    ctx.save();
     for(let k=0;k<density;k++){
-      const sx = x + Math.random()*w; const sy = y + Math.random()*h; const sw= (0.5+Math.random()*1.5)*scale, sh=(0.5+Math.random()*1.5)*scale;
-      ctx.fillStyle='rgba(255,255,255,'+(0.15+Math.random()*0.25)+')'; ctx.fillRect(sx,sy,sw,sh);
+      const rx=Math.random(), ry=Math.random();
+      const sx = x + rx*w; const sy = y + ry*h;
+      const sw = (0.6 + Math.random()*2.0)*scale; const sh = (0.6 + Math.random()*2.0)*scale;
+      const on = Math.sin((time*20.0 + seed*50.0 + rx*10.0 + ry*7.0))>0.2; // unstable gating
+      if(!on) continue;
+      const a = 0.05 + 0.25*flick*(0.7+0.3*Math.random());
+      ctx.fillStyle = nearCol;
+      ctx.globalAlpha = a;
+      ctx.fillRect(sx,sy,sw,sh);
     }
     ctx.restore();
   };
