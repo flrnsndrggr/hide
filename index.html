@@ -19,23 +19,6 @@
       -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
     }
 
-  // Simple projectile used by 'spiral' power-up to cull sentries
-  class Projectile{
-    constructor(x,y,vx,vy,life=1.6,color='#ffffff'){
-      this.x=x; this.y=y; this.vx=vx; this.vy=vy; this.life=life; this.color=color; this.dead=false;
-    }
-    update(dt, obstacles){
-      if(this.dead) return; this.life-=dt; if(this.life<=0){ this.dead=true; return; }
-      // integrate with simple damping
-      this.x += this.vx*dt; this.y += this.vy*dt; this.vx*=0.999; this.vy*=0.999;
-      // clip to world
-      if(this.x<0||this.y<0||this.x>W()||this.y>H()){ this.dead=true; }
-      // stop if hits obstacle
-      for(const o of obstacles){ if(this.x>=o.x&&this.x<=o.x+o.w&&this.y>=o.y&&this.y<=o.y+o.h){ this.dead=true; break; } }
-    }
-    draw(ctx){ if(this.dead) return; ctx.save(); ctx.fillStyle=this.color; ctx.globalAlpha=0.9; ctx.fillRect(this.x*scale-1*scale, this.y*scale-1*scale, 2*scale, 2*scale); ctx.restore(); }
-  }
-
     body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
     #hud { position: fixed; left: env(safe-area-inset-left); top: env(safe-area-inset-top); right: env(safe-area-inset-right);
       display: flex; justify-content: space-between; padding: 8px 12px; font-size: clamp(12px, 1.8vw, 16px); pointer-events: none; opacity: .85; z-index: 10; }
@@ -58,6 +41,10 @@
 
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d', { alpha: false });
+  // HUD elements
+  const hudLevel = document.getElementById('level');
+  const hudStatus = document.getElementById('status');
+  const hudFps = document.getElementById('fps');
   if(!ctx){ alert('2D canvas not supported in this environment.'); throw new Error('No 2D context'); }
   let DPR = Math.min(3, window.devicePixelRatio || 1), scale = DPR;
   function fitCanvas(){
@@ -73,6 +60,11 @@
   window.addEventListener('resize', fitCanvas, { passive: true });
   fitCanvas();
   ['touchmove','gesturestart'].forEach(evt=>document.addEventListener(evt,e=>e.preventDefault(),{passive:false}));
+
+  // World-space helpers and safety constants
+  const W = ()=> canvas.width / scale;
+  const H = ()=> canvas.height / scale;
+  const SAFE_PU = 36; // safe distance around entities for power-up spawn
 
   const keys = new Set();
   window.addEventListener('keydown', e=>{
@@ -601,8 +593,11 @@
       this.searchPoints=pts; this.currentSearch=0;
     }
     update(dt, player, obstacles, cfg, grid, playerSp=0){
-      // Bots move at the same instantaneous speed as the player (fallback to cfg when unavailable)
-      this.speed = playerSp>0 ? playerSp : cfg.botSpeed;
+      // Bots should NOT inherit player's dash speed; use config speed with optional global botSpeedMul
+      const baseBotSpeed = (cfg.botSpeed||120) * ((typeof game!=='undefined' && game.botSpeedMul) ? game.botSpeedMul : 1);
+      this.speed = baseBotSpeed;
+      // Reduce baseline red 'hunter' speed by 7% 
+      if(this.kind==='hunter') this.speed *= 0.93;
       const canTick = dt>0; // only run expensive path logic when movement time advances
       // Determine perception for this tick
       const seenNow = (this.kind==='stalker') ? true : this.canSee(player,obstacles,cfg);
