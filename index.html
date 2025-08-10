@@ -3,12 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#000000">
   <title>Matrix Hide and Seek</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="apple-touch-icon" href="https://via.placeholder.com/192x192.png?text=HnS">
+  <link rel="apple-touch-icon" href="icons/icon-192.svg">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='8' fill='%23000'/%3E%3Ccircle cx='32' cy='32' r='14' fill='%23fff'/%3E%3C/svg%3E">
   <style>
     :root { color-scheme: dark; }
     html, body {
@@ -73,6 +75,7 @@
     if(k==='r') { if(!game.running){ game.startNewRun(); } else { game.resetLevel(); } }
     if(k==='m') game.debug = !game.debug;
     if(k==='n') game.audio.toggleMute();
+    if(k==='z') { game.autoMode = !game.autoMode; }
   }, { passive: false });
   window.addEventListener('keyup', e=> keys.delete(e.key.toLowerCase()), { passive: true });
 
@@ -98,6 +101,34 @@
 
 
   function inputVector(){
+    // Automode: AI-driven input
+    if(game?.autoMode && game.screen==='play' && game.running && !game.overlayActive){
+      try{
+        const p = game.player; if(!p) return [0,0];
+        // Target: exit center
+        const ex=game.exitRect.x+game.exitRect.w*0.5, ey=game.exitRect.y+game.exitRect.h*0.5;
+        let vx = ex - p.x, vy = ey - p.y; // attraction to exit
+        // Normalize base
+        const bl=Math.hypot(vx,vy)||1; vx/=bl; vy/=bl;
+        // Repel from bots
+        const Rb = 200; const kB = 24000; // weight constants
+        for(const b of game.bots||[]){
+          const dx = p.x - b.x, dy = p.y - b.y; const d2 = dx*dx+dy*dy; if(d2<1) continue;
+          if(d2 < Rb*Rb){ const w = kB / d2; vx += dx*w; vy += dy*w; }
+        }
+        // Repel from obstacles (inflate a bit)
+        const Ro = 42; const kO = 0.045;
+        for(const o of game.obstacles||[]){
+          const nx = Math.max(o.x - Ro, Math.min(p.x, o.x + o.w + Ro));
+          const ny = Math.max(o.y - Ro, Math.min(p.y, o.y + o.h + Ro));
+          const dx = p.x - nx, dy = p.y - ny; const d = Math.hypot(dx,dy);
+          if(d>0 && d < Ro*1.2){ const w = kO * (Ro - d); vx += (dx/d) * w; vy += (dy/d) * w; }
+        }
+        // Small jitter if almost zero to prevent stalls
+        if(Math.abs(vx)+Math.abs(vy) < 0.001){ vx += (Math.random()*2-1)*0.1; vy += (Math.random()*2-1)*0.1; }
+        const L = Math.hypot(vx,vy)||1; return [vx/L, vy/L];
+      }catch{ /* fall through to manual */ }
+    }
     let ax=0, ay=0;
     if(keys.has('arrowleft')||keys.has('a')) ax -= 1;
     if(keys.has('arrowright')||keys.has('d')) ax += 1;
@@ -589,8 +620,8 @@
     update(dt, player, obstacles, cfg, grid, playerSp=0){
       // If player isn't moving, dt may be 0 (moveFactor). Stop movement but keep logic alive.
       if(!(dt>0)) { this.vx = 0; this.vy = 0; /* continue to process state/timers without movement */ }
-      // Baseline sentry speed: 95% of player speed
-      const baseBotSpeed = (cfg.playerMaxSpeed * 0.95) * ((typeof game!=='undefined' && game.botSpeedMul) ? game.botSpeedMul : 1);
+      // Baseline sentry speed: 91% of player speed (4% reduction from 95%)
+      const baseBotSpeed = (cfg.playerMaxSpeed * 0.91) * ((typeof game!=='undefined' && game.botSpeedMul) ? game.botSpeedMul : 1);
       this.speed = baseBotSpeed; // no slowdown for hunter; other kinds may modify later
       const canTick = dt>0;
       const seenNow = (this.kind==='stalker') ? true : this.canSee(player,obstacles,cfg);
@@ -674,6 +705,8 @@
     level: 1,
     debug: false,
     running: false,
+    autoMode: false,
+    screen: 'menu', // 'menu' | 'play' | 'highscores'
     overlayActive: false,
     time: 0,
     cfg: null,
@@ -690,7 +723,59 @@
     mist: new ParticleMist(PARTICLE_COUNT),
     pfQueue: [],
     prevBotStates: new Map(),
-    init(){ this.startNewRun(); },
+    // Highscore helpers
+    getScores(){ try{ const s=safeGet('hide_highscores'); return s?JSON.parse(s):[]; }catch{ return []; } },
+    saveScores(arr){ try{ safeSet('hide_highscores', JSON.stringify(arr)); }catch{} },
+    qualifies(score){ const arr=this.getScores(); if(arr.length<5) return true; return score>Math.min(...arr.map(x=>x.score)); },
+    addScore(name, score){ const arr=this.getScores(); arr.push({ name: String(name||'---').slice(0,12), score: score|0 }); arr.sort((a,b)=>b.score-a.score); if(arr.length>5) arr.length=5; this.saveScores(arr); },
+    // Screens
+    showHome(){
+      this.screen='menu'; this.running=false; this.overlayActive=true;
+      const html=`<div style="min-width:260px">
+        <div style="font-size:24px; letter-spacing:.5px; margin-bottom:14px">Matrix Hide and Seek</div>
+        <div style="display:flex; flex-direction:column; gap:10px; align-items:stretch">
+          <button id="btnStart" style="padding:10px 14px; font-size:16px">New Run</button>
+          <button id="btnScores" style="padding:10px 14px; font-size:16px">Highscores</button>
+        </div>
+      </div>`;
+      overlay.style.display='flex'; overlayText.innerHTML=html;
+      const bind=()=>{
+        const s=document.getElementById('btnStart'); const h=document.getElementById('btnScores');
+        s?.addEventListener('click', ()=>{ this.startNewRun(); });
+        h?.addEventListener('click', ()=>{ this.showHighscores(); });
+      };
+      setTimeout(bind,0);
+    },
+    showHighscores(){
+      this.screen='highscores'; this.running=false; this.overlayActive=true;
+      const arr=this.getScores();
+      const rows=arr.length?arr.map((r,i)=>`<div style='display:flex; justify-content:space-between'><span>${i+1}. ${r.name}</span><span>Matrix ${r.score}</span></div>`).join(''):"<div style='opacity:.8'>No highscores yet.</div>";
+      overlay.style.display='flex';
+      overlayText.innerHTML = `<div style="min-width:260px">
+        <div style="font-size:22px; margin-bottom:10px">Highscores</div>
+        <div style="display:flex; flex-direction:column; gap:6px; text-align:left; margin-bottom:14px">${rows}</div>
+        <button id='btnBack' style='padding:8px 12px; font-size:15px'>Back</button>
+      </div>`;
+      setTimeout(()=> document.getElementById('btnBack')?.addEventListener('click', ()=> this.showHome()), 0);
+    },
+    promptHighscore(score){
+      this.screen='menu'; this.running=false; this.overlayActive=true; overlay.style.display='flex';
+      overlayText.innerHTML = `<div style='min-width:260px'>
+        <div style='font-size:18px; margin-bottom:8px'>Top 5! Enter name</div>
+        <div style='opacity:.85; margin-bottom:8px'>Matrix ${score}</div>
+        <input id='nameInput' maxlength='12' placeholder='Your name' style='width:100%; padding:8px; font-size:16px; margin-bottom:10px;'/>
+        <div style='display:flex; gap:8px'>
+          <button id='btnSave' style='flex:1; padding:8px 12px; font-size:15px'>Save</button>
+          <button id='btnSkip' style='padding:8px 12px; font-size:15px'>Skip</button>
+        </div>
+      </div>`;
+      setTimeout(()=>{
+        const inp = document.getElementById('nameInput'); inp?.focus();
+        document.getElementById('btnSave')?.addEventListener('click', ()=>{ const name = inp && 'value' in inp ? inp.value: ''; this.addScore(name, score); this.showHighscores(); });
+        document.getElementById('btnSkip')?.addEventListener('click', ()=> this.showHome());
+      },0);
+    },
+    init(){ this.showHome(); },
     buildLevel(level){
       this.time = 0;
       this.cfg = genLevelConfig(level);
@@ -789,10 +874,11 @@
     },
     onFps(fps){ if(fps<48) this.mist.setActive(2200); else if(fps<54) this.mist.setActive(3000); else this.mist.setActive(PARTICLE_COUNT); },
     startNewRun(){
+      this.overlayActive=false; overlay.style.display='none';
+      this.screen='play';
       this.runs = Number(safeGet('hide_runs')||0) + 1;
       safeSet('hide_runs', String(this.runs));
       this.level = 1; this.buildLevel(this.level);
-      this.showMessage("New Run #"+this.runs+". Good luck!");
       this.running=true;
     },
     update(dt){
@@ -989,7 +1075,9 @@
             this.audio.caught();
             this.audio.stopMovement(); this.audio.stopTimerLoop?.();
           }
-          this.running=false; this.showMessage("Caught. Tap to start a new run or press R.", ()=>{ if(!this.running) this.startNewRun(); });
+          this.running=false;
+          // Highscore flow
+          const score=this.level; if(this.qualifies(score)) this.promptHighscore(score); else this.showHome();
         }
       }
       for(let bi=0; bi<this.bots.length; bi++){
@@ -1003,7 +1091,7 @@
         if(this.debug){
           const chasing=this.bots.filter(b=>b.state==='chase').length;
           hudStatus.textContent = chasing?(`chase x${chasing}`):'';
-        } else hudStatus.textContent='';
+        } else hudStatus.textContent = (this.autoMode?'AUTO':'');
       }
     },
     drawBackground(){
@@ -1018,39 +1106,33 @@
     draw(){
       ctx.clearRect(0,0,canvas.width,canvas.height); this.drawBackground(); this.mist.draw(ctx);
       ctx.save();
-      for(const o of this.obstacles){ this.drawObstacle(ctx, o, this.time); }
+      if(this.screen==='play'){
+        for(const o of this.obstacles){ this.drawObstacle(ctx, o, this.time); }
+      }
       ctx.restore();
-      // Rotating spiral exit
+      // Spiral: in play show at exit; in menu show large centered
       ctx.save();
-      const ex=this.exitRect.x*scale, ey=this.exitRect.y*scale, ew=this.exitRect.w*scale, eh=this.exitRect.h*scale;
-      const ecx=ex+ew*0.5, ecy=ey+eh*0.5; const es=Math.min(ew,eh);
+      if(this.screen==='play'){
+        const ex=this.exitRect.x*scale, ey=this.exitRect.y*scale, ew=this.exitRect.w*scale, eh=this.exitRect.h*scale;
+        var ecx=ex+ew*0.5, ecy=ey+eh*0.5; var es=Math.min(ew,eh);
+      } else {
+        var ecx=canvas.width*0.5, ecy=canvas.height*0.5; var es=Math.min(canvas.width,canvas.height)*0.5;
+      }
       ctx.translate(ecx, ecy);
       ctx.rotate(this.time*0.9);
-      const turns = 4.5; // number of spiral turns
-      const maxR = es*0.48; const minR = es*0.06;
+      const turns = 4.5; const maxR = es*0.48; const minR = es*0.06;
       const a = minR; const b = (maxR-minR)/(Math.PI*2*turns);
-      ctx.lineWidth = 2.2*scale; ctx.strokeStyle = '#ffffff';
-      ctx.globalAlpha = 0.9;
-      ctx.beginPath();
-      const steps = 360;
-      for(let i=0;i<=steps;i++){
-        const th = (i/steps) * (Math.PI*2*turns);
-        const r = a + b*th;
-        const x = Math.cos(th)*r;
-        const y = Math.sin(th)*r;
-        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-      }
-      ctx.stroke();
-      // subtle rotating glow rings
-      ctx.globalAlpha = 0.18;
-      for(let k=0;k<3;k++){
-        const rr = maxR*(0.55 + 0.12*k*(1+0.2*Math.sin(this.time*2+k)));
-        ctx.beginPath(); ctx.arc(0,0, rr, 0, Math.PI*2); ctx.stroke();
-      }
+      ctx.lineWidth = 2.2*scale; ctx.strokeStyle = '#ffffff'; ctx.globalAlpha = (this.screen==='play')?0.9:0.7;
+      ctx.beginPath(); const steps = 360;
+      for(let i=0;i<=steps;i++){ const th=(i/steps)*(Math.PI*2*turns); const r=a+b*th; const x=Math.cos(th)*r, y=Math.sin(th)*r; if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+      ctx.stroke(); ctx.globalAlpha = 0.18;
+      for(let k=0;k<3;k++){ const rr=maxR*(0.55 + 0.12*k*(1+0.2*Math.sin(this.time*2+k))); ctx.beginPath(); ctx.arc(0,0, rr, 0, Math.PI*2); ctx.stroke(); }
       ctx.restore();
-      if(this.powerUps){ for(const pu of this.powerUps){ pu.draw(ctx, this.time); } }
-      this.trails.player?.draw(ctx); for(const tr of this.trails.bots){ tr.draw(ctx); }
-      this.player.draw(ctx); for(const b of this.bots){ b.draw(ctx); }
+      if(this.screen==='play'){
+        if(this.powerUps){ for(const pu of this.powerUps){ pu.draw(ctx, this.time); } }
+        this.trails.player?.draw(ctx); for(const tr of this.trails.bots){ tr.draw(ctx); }
+        this.player.draw(ctx); for(const b of this.bots){ b.draw(ctx); }
+      }
       if(this.slowTimer>0||this.freezeTimer>0||this.dashTimer>0||this.predatorTimer>0){
         const px=this.player.x*scale, py=this.player.y*scale, rr=this.player.r*scale+8*scale; ctx.save(); ctx.lineWidth=3*scale; ctx.globalAlpha=0.95; ctx.lineCap='round';
         const ring=(timer,total,col,ofs)=>{ if(!(timer>0&&total)) return; const frac=Math.max(0,Math.min(1,timer/total)); ctx.strokeStyle=col; const a0=ofs+this.time*1.6, a1=a0+frac*Math.PI*2; ctx.beginPath(); ctx.arc(px,py,rr, a0, a1); ctx.stroke(); };
