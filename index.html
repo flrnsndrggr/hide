@@ -19,6 +19,23 @@
       -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
     }
 
+  // Simple projectile used by 'spiral' power-up to cull sentries
+  class Projectile{
+    constructor(x,y,vx,vy,life=1.6,color='#ffffff'){
+      this.x=x; this.y=y; this.vx=vx; this.vy=vy; this.life=life; this.color=color; this.dead=false;
+    }
+    update(dt, obstacles){
+      if(this.dead) return; this.life-=dt; if(this.life<=0){ this.dead=true; return; }
+      // integrate with simple damping
+      this.x += this.vx*dt; this.y += this.vy*dt; this.vx*=0.999; this.vy*=0.999;
+      // clip to world
+      if(this.x<0||this.y<0||this.x>W()||this.y>H()){ this.dead=true; }
+      // stop if hits obstacle
+      for(const o of obstacles){ if(this.x>=o.x&&this.x<=o.x+o.w&&this.y>=o.y&&this.y<=o.y+o.h){ this.dead=true; break; } }
+    }
+    draw(ctx){ if(this.dead) return; ctx.save(); ctx.fillStyle=this.color; ctx.globalAlpha=0.9; ctx.fillRect(this.x*scale-1*scale, this.y*scale-1*scale, 2*scale, 2*scale); ctx.restore(); }
+  }
+
     body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
     #hud { position: fixed; left: env(safe-area-inset-left); top: env(safe-area-inset-top); right: env(safe-area-inset-right);
       display: flex; justify-content: space-between; padding: 8px 12px; font-size: clamp(12px, 1.8vw, 16px); pointer-events: none; opacity: .85; z-index: 10; }
@@ -502,13 +519,26 @@
                   + Math.sin(ny*p.f2 + t*p.sp2 + p.phaseY)
                   + Math.sin((nx+ny)*p.f3 + t*p.sp3);
           const vv = (v+3)/6; // 0..1
-          const gray = Math.max(0, Math.min(255, Math.floor(vv*255)));
-          d[i]=gray; d[i+1]=gray; d[i+2]=gray; d[i+3]=170; // grayscale with alpha
+          // Map to shifting hues
+          const hue = (p.hueBase + p.hueSwing*vv + t*20) % 360;
+          const sat = 60 + Math.floor(40*vv);
+          const val = 25 + Math.floor(65*vv);
+          const c = (val/100)*(sat/100);
+          const h = hue/60; const xh = c*(1-Math.abs((h%2)-1));
+          let r=0,g=0,b=0;
+          if(h>=0&&h<1){ r=c; g=xh; b=0; } else if(h<2){ r=xh; g=c; b=0; }
+          else if(h<3){ r=0; g=c; b=xh; } else if(h<4){ r=0; g=xh; b=c; }
+          else if(h<5){ r=xh; g=0; b=c; } else { r=c; g=0; b=xh; }
+          const m = (val/100) - c;
+          d[i]  = Math.max(0, Math.min(255, Math.floor((r+m)*255)));
+          d[i+1]= Math.max(0, Math.min(255, Math.floor((g+m)*255)));
+          d[i+2]= Math.max(0, Math.min(255, Math.floor((b+m)*255)));
+          d[i+3]= 150; // slight transparency
         }
       }
       this.ctx.putImageData(img,0,0);
       ctxMain.save();
-      ctxMain.imageSmoothingEnabled=true; ctxMain.globalAlpha=0.35; ctxMain.globalCompositeOperation='screen';
+      ctxMain.imageSmoothingEnabled=true; ctxMain.globalAlpha=0.28; ctxMain.globalCompositeOperation='screen';
       ctxMain.drawImage(this.off, 0, 0, canvas.width, canvas.height);
       ctxMain.globalCompositeOperation='source-over'; ctxMain.restore();
     }
@@ -654,138 +684,6 @@
       ctx.closePath(); ctx.fill(); ctx.restore();
     }
   }
-
-  const hudLevel=document.getElementById('level'), hudFps=document.getElementById('fps'), overlay=document.getElementById('overlay'), overlayText=document.getElementById('overlayText');
-  const hudStatus=document.getElementById('status');
-  const game={
-    level:1, player:null, bots:[], obstacles:[], exitRect:{x:0,y:0,w:26,h:26}, grid:null, mist:null, running:true, debug:false, bg:{x:0,y:0}, time:0,
-    trails:{ player:null, bots:[] }, effects:[], fractal:new PsyFractal(),
-    audio:new Sfx(), lastStepTime:0, prevBotStates:new WeakMap(), lastAmbushTime:-10,
-    // Audio state flags
-    wasMoving:false, anyTimerActivePrev:false,
-    init(){
-      // Load persisted run counter
-      this.runs = Number(safeGet('hide_runs')||0);
-      // Pathfinding task queue to spread heavy work across frames
-      this.pfQueue = [];
-      this.buildLevel(this.level);
-      loop(performance.now());
-      // Ensure audio context is unlocked on first user interaction (for Matrix 1)
-      const initAudioOnce=()=>{ this.audio.init(); };
-      window.addEventListener('pointerdown', initAudioOnce, { once:true, capture:true });
-      window.addEventListener('keydown', initAudioOnce, { once:true, capture:true });
-      // Try start audio immediately as well (will retry until allowed)
-      this.audio.init();
-      this.showMessage("Find the exit. Avoid the red hexagon. Arrow keys or left thumb. R restart. M debug.");
-      if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
-    },
-    buildLevel(level){
-      const cfg=genLevelConfig(level);
-      this.cfg=cfg;
-      const MAX_TRIES=30;
-      for(let tries=0; tries<MAX_TRIES; tries++){
-        // Generate a candidate level
-        const obstacles=makeObstacles(cfg.obstacleCount);
-        const grid=new Grid(obstacles, BOT_RADIUS);
-        const ppos=randomFreePoint(obstacles, PLAYER_RADIUS);
-        // Spawn sentries: one per level, no cap. Enforce safety distances from player and between sentries
-        const sentryCount=Math.max(1, level);
-        const bposes=[]; const SAFE_PB=180, SAFE_BB=120; // px
-        for(let i=0;i<sentryCount;i++){
-          let triesB=0, pos=null;
-          while(triesB++<400){
-            const cand=randomFreePoint(obstacles, BOT_RADIUS);
-            if(dist2(cand.x,cand.y, ppos.x,ppos.y) < SAFE_PB*SAFE_PB) { continue; }
-            let okb=true; for(const bp of bposes){ if(dist2(cand.x,cand.y, bp.x,bp.y) < SAFE_BB*SAFE_BB){ okb=false; break; } }
-            if(okb){ pos=cand; break; }
-          }
-          pos = pos || randomFreePoint(obstacles, BOT_RADIUS);
-          bposes.push(pos);
-        }
-        // Place exit ensuring not overlapping obstacles and not too close to player
-        let exit={x:0,y:0,w:26,h:26};
-        let ok=false; let attempt=0;
-        while(attempt++<200){
-          const r={x:20+Math.random()*(W()-40), y:20+Math.random()*(H()-40), w:26, h:26};
-          let coll=false;
-          for(const o of obstacles){ if(rectsIntersect({x:r.x-6,y:r.y-6,w:r.w+12,h:r.h+12},o)){ coll=true; break; } }
-          if(!coll){ exit=r; }
-          const farEnough = dist2(ppos.x,ppos.y, r.x+r.w/2, r.y+r.h/2) >= (Math.min(W(),H())*0.25)**2;
-          if(!coll && farEnough){ ok=true; break; }
-        }
-        if(!ok) continue;
-        const exitCx=exit.x+exit.w/2, exitCy=exit.y+exit.h/2;
-        const pathToExit=grid.findPath(ppos.x, ppos.y, exitCx, exitCy);
-        if(pathToExit && pathToExit.length>1){
-          // Commit level
-          this.obstacles=obstacles; this.grid=grid; this.player=new Player(ppos);
-          // Assign diverse bot kinds with rarities
-          // Create bots with max 20% special kinds (non-red). Default kind is 'hunter' (red)
-          this.bots=bposes.map(p=>new Bot(p,'hunter'));
-          const maxSpecial = Math.floor(this.bots.length * 0.20);
-          const idxs=[...this.bots.keys()]; for(let i=idxs.length-1;i>0;i--){ const j=(Math.random()* (i+1))|0; [idxs[i],idxs[j]]=[idxs[j],idxs[i]]; }
-          const specials=['tele','cloner','grower','eater','phase','mimic','turret','stalker'];
-          for(let s=0; s<Math.min(maxSpecial, idxs.length); s++){
-            const i=idxs[s]; const pick=specials[(Math.random()*specials.length)|0]; this.bots[i].kind=pick;
-          }
-          this.exitRect=exit;
-          this.mist=new ParticleMist(PARTICLE_COUNT);
-          this.trails.player=new Trail('#ffffff', 600);
-          const colorOf=(k)=> k==='tele'?'#bb66ff': k==='eater'?'#ffaa44': k==='cloner'?'#66ffee': k==='grower'?'#ff66aa': k==='phase'?'#99ff99': k==='mimic'?'#ffffff': k==='turret'?'#ffbbcc': k==='stalker'?'#66aaff':'#ff2a2a';
-          this.trails.bots=this.bots.map(b=>new Trail(colorOf(b.kind), 500));
-          this.effects.length=0;
-          for(const b of this.bots){ b.setPatrol(this.grid); this.prevBotStates.set(b, b.state); }
-          this.bg.x=this.player.x; this.bg.y=this.player.y;
-          // New fractal params per level
-          this.fractal.randomize();
-          // Power-ups per level (moved into main path)
-          this.powerUps=[];
-          const types=['slow','cull','shield','freeze','dash','predator'];
-          const puCount = Math.min(4, 2 + Math.floor(Math.random()*3));
-          for(let i=0;i<puCount;i++){
-            let pos=null, tries=0; const SAFE_PU=80;
-            while(tries++<500){
-              const c=randomFreePoint(this.obstacles, 10);
-              if(dist2(c.x,c.y,this.player.x,this.player.y) < (SAFE_PU+PLAYER_RADIUS+12)**2) { continue; }
-              let nearBot=false; for(const bp of this.bots){ if(dist2(c.x,c.y,bp.x,bp.y) < (SAFE_PU+BOT_RADIUS+12)**2){ nearBot=true; break; } }
-              if(nearBot) continue;
-              if(circleRectCollide(c.x,c.y,14,this.exitRect)) continue;
-              pos=c; break;
-            }
-            const type=types[Math.floor(Math.random()*types.length)];
-            this.powerUps.push(new PowerUp(pos?pos.x:W()*0.5, pos?pos.y:H()*0.5, type));
-          }
-          // Effect timers/state
-          this.botSpeedMul=1; this.slowTimer=0; this.freezeTimer=0; this.shield=0; this.dashTimer=0;
-          this.running=true;
-          return;
-        }
-      }
-      // Fallback: minimal obstacles to guarantee a playable level
-      this.obstacles=[]; this.grid=new Grid(this.obstacles, BOT_RADIUS);
-      const ppos=randomFreePoint(this.obstacles, PLAYER_RADIUS); this.player=new Player(ppos);
-      // Fallback bot with safety distance
-      (function(){
-        const SAFE_PB=180; let pos=null, tries=0;
-        while(tries++<400){ const c=randomFreePoint(game.obstacles, BOT_RADIUS); if(dist2(c.x,c.y, ppos.x,ppos.y) >= SAFE_PB*SAFE_PB){ pos=c; break; } }
-        game.bots=[ new Bot(pos || randomFreePoint(game.obstacles, BOT_RADIUS), 'hunter') ];
-      })();
-      this.exitRect={x:W()*0.75-13,y:H()*0.5-13,w:26,h:26};
-      this.mist=new ParticleMist(PARTICLE_COUNT);
-      this.trails.player=new Trail('#ffffff', 1500);
-      const colorOfF=(k)=> k==='tele'?'#bb66ff': k==='eater'?'#ffaa44': k==='cloner'?'#66ffee': k==='grower'?'#ff66aa': k==='phase'?'#99ff99': k==='mimic'?'#ffffff': k==='turret'?'#ffbbcc': k==='stalker'?'#66aaff':'#ff2a2a';
-      this.trails.bots=this.bots.map(b=>new Trail(colorOfF(b.kind), 1200));
-      this.effects.length=0;
-      for(const b of this.bots){ b.setPatrol(this.grid); this.prevBotStates.set(b, b.state); }
-      this.bg.x=this.player.x; this.bg.y=this.player.y; this.fractal.randomize();
-      // Power-ups per level
-      this.powerUps=[];
-      const types=['slow','cull','shield','freeze','dash','predator'];
-      const puCount = Math.min(4, 2 + Math.floor(Math.random()*3));
-      for(let i=0;i<puCount;i++){
-        let pos=null, tries=0; const SAFE_PU=80;
-        while(tries++<500){
-          const c=randomFreePoint(this.obstacles, 10);
           if(dist2(c.x,c.y,this.player.x,this.player.y) < (SAFE_PU+PLAYER_RADIUS+12)**2) continue;
           let nearBot=false; for(const bp of this.bots){ if(dist2(c.x,c.y,bp.x,bp.y) < (SAFE_PU+BOT_RADIUS+12)**2){ nearBot=true; break; } }
           if(nearBot) continue;
