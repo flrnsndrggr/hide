@@ -18,7 +18,6 @@
       touch-action: none; overscroll-behavior: none;
       -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
     }
-
     body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
     #hud { position: fixed; left: env(safe-area-inset-left); top: env(safe-area-inset-top); right: env(safe-area-inset-right);
       display: flex; justify-content: space-between; padding: 8px 12px; font-size: clamp(12px, 1.8vw, 16px); pointer-events: none; opacity: .85; z-index: 10; }
@@ -61,10 +60,8 @@
   fitCanvas();
   ['touchmove','gesturestart'].forEach(evt=>document.addEventListener(evt,e=>e.preventDefault(),{passive:false}));
 
-  // World-space helpers and safety constants
-  const W = ()=> canvas.width / scale;
-  const H = ()=> canvas.height / scale;
-  const SAFE_PU = 36; // safe distance around entities for power-up spawn
+  // World-space helpers
+  // Note: W/H are defined later alongside other constants to avoid duplicates
 
   const keys = new Set();
   window.addEventListener('keydown', e=>{
@@ -199,6 +196,7 @@
 
   const W = ()=>canvas.width/scale, H = ()=>canvas.height/scale;
   const BOT_RADIUS=14, PLAYER_RADIUS=12, PARTICLE_COUNT=3800, GRID_SIZE=16;
+  const SAFE_PU = 36; // safe distance around entities for power-up spawn
   // Safe localStorage helpers
   function safeGet(k){ try{ return localStorage.getItem(k); }catch{ return null; } }
   function safeSet(k,v){ try{ localStorage.setItem(k,v); }catch{} }
@@ -679,17 +677,86 @@
       ctx.closePath(); ctx.fill(); ctx.restore();
     }
   }
-          if(dist2(c.x,c.y,this.player.x,this.player.y) < (SAFE_PU+PLAYER_RADIUS+12)**2) continue;
-          let nearBot=false; for(const bp of this.bots){ if(dist2(c.x,c.y,bp.x,bp.y) < (SAFE_PU+BOT_RADIUS+12)**2){ nearBot=true; break; } }
-          if(nearBot) continue;
-          if(circleRectCollide(c.x,c.y,14,this.exitRect)) continue;
-          pos=c; break;
-        }
-        const type=types[Math.floor(Math.random()*types.length)];
-        this.powerUps.push(new PowerUp(pos?pos.x:W()*0.5, pos?pos.y:H()*0.5, type));
+  // Core game object literal
+  const game = {
+    level: 1,
+    debug: false,
+    running: false,
+    time: 0,
+    cfg: null,
+    player: null,
+    bots: [],
+    obstacles: [],
+    grid: null,
+    powerUps: [],
+    effects: [],
+    trails: { player: new Trail('#ffffff', 600), bots: [] },
+    bg: { x: 0, y: 0 },
+    audio: new Sfx(),
+    fractal: new PsyFractal(),
+    mist: new ParticleMist(PARTICLE_COUNT),
+    pfQueue: [],
+    prevBotStates: new Map(),
+    init(){ this.startNewRun(); },
+    buildLevel(level){
+      // Reset level-scoped state
+      this.time = 0;
+      this.cfg = genLevelConfig(level);
+      this.effects = [];
+      this.trails = { player: new Trail('#ffffff', 600), bots: [] };
+      this.powerUps = [];
+      this.pfQueue = [];
+      this.prevBotStates = new Map();
+      this.bg = { x: W()*0.5, y: H()*0.5 };
+
+      // Obstacles and grid
+      this.obstacles = makeObstacles(this.cfg.obstacleCount);
+      this.grid = new Grid(this.obstacles, BOT_RADIUS);
+
+      // Player spawn
+      const p0 = randomFreePoint(this.obstacles, PLAYER_RADIUS);
+      this.player = new Player(p0);
+
+      // Exit area
+      const exitSize = GRID_SIZE*3;
+      let ex=null;
+      for(let tries=0; tries<200; tries++){
+        const px = 10 + Math.random()*(W()-exitSize-20);
+        const py = 10 + Math.random()*(H()-exitSize-20);
+        const rect={x:px,y:py,w:exitSize,h:exitSize};
+        let coll=false; for(const o of this.obstacles){ if(rectsIntersect(rect,o)){ coll=true; break; } }
+        if(!coll){ ex=rect; break; }
       }
+      this.exitRect = ex || { x: W()-exitSize-10, y: H()-exitSize-10, w: exitSize, h: exitSize };
+
+      // Bots
+      this.bots = [];
+      const baseKinds = ['hunter','hunter','stalker'];
+      for(const k of baseKinds){
+        const pos=randomFreePoint(this.obstacles,BOT_RADIUS);
+        const b=new Bot(pos,k);
+        this.bots.push(b);
+        this.trails.bots.push(new Trail(botColor(b.kind), 300));
+      }
+
+      // Initial power-ups
+      const types=['slow','freeze','shield','dash','cull'];
+      for(let k=0;k<2;k++){
+        const pos=randomFreePoint(this.obstacles,14);
+        if(dist2(pos.x,pos.y,this.player.x,this.player.y) < (SAFE_PU+PLAYER_RADIUS+12)**2) { k--; continue; }
+        let nearBot=false; for(const bp of this.bots){ if(dist2(pos.x,pos.y,bp.x,bp.y) < (SAFE_PU+BOT_RADIUS+12)**2){ nearBot=true; break; } }
+        if(nearBot){ k--; continue; }
+        if(circleRectCollide(pos.x,pos.y,14,this.exitRect)) { k--; continue; }
+        const type=types[Math.floor(Math.random()*types.length)];
+        this.powerUps.push(new PowerUp(pos.x, pos.y, type));
+      }
+
       // Effect timers/state
-      this.botSpeedMul=1; this.slowTimer=0; this.freezeTimer=0; this.shield=0; this.dashTimer=0;
+      this.botSpeedMul=1;
+      this.slowTimer=0; this.slowTotal=4.0;
+      this.freezeTimer=0; this.freezeTotal=2.5;
+      this.dashTimer=0; this.dashTotal=2.2;
+      this.predator=false; this.predatorTimer=0; this.predatorTotal=2.0;
       this.running=true;
     },
     resetLevel(){ this.buildLevel(this.level); },
