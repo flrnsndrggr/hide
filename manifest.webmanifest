@@ -9,8 +9,8 @@
   "description": "Stealth chase through synthetic matrices. Mobile-friendly.",
   "orientation": "any",
   "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "https://via.placeholder.com/192x192.png?text=HnS", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "https://via.placeholder.com/512x512.png?text=HnS", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "https://via.placeholder.com/512x512.png?text=HnS", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

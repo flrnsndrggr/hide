@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#000000">
   <title>Matrix Hide and Seek</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="https://via.placeholder.com/192x192.png?text=HnS">
   <style>
     :root { color-scheme: dark; }
     html, body {
@@ -325,12 +325,12 @@
   }
 
   class ParticleMist{
-    constructor(count, obstacles){
+    constructor(count){
       this.n=count; this.active=count;
       this.px=new Float32Array(count); this.py=new Float32Array(count);
       this.vx=new Float32Array(count); this.vy=new Float32Array(count);
       for(let i=0;i<count;i++){ this.px[i]=Math.random()*W(); this.py[i]=Math.random()*H(); this.vx[i]=Math.random()*20-10; this.vy[i]=Math.random()*20-10; }
-      this.t=0; this.obstacles = obstacles;
+      this.t=0;
     }
     setActive(n){ this.active=Math.max(800, Math.min(this.n, n|0)); }
     flow(x,y,t){ const s1=0.0025,s2=0.0018; const a=Math.sin(x*s1+t*0.6)+Math.cos(y*s1-t*0.7); const b=Math.sin(y*s2+t*0.5)-Math.cos(x*s2-t*0.4); const ang=Math.atan2(b,a); return [Math.cos(ang),Math.sin(ang)]; }
@@ -387,14 +387,20 @@
     now(){ return this.ctx?this.ctx.currentTime:0; }
     async load(){
       if(this.loading||this.loaded||!this.ctx) return; this.loading=true;
-      const decode=async (url)=>{ const r=await fetch(url); const a=await r.arrayBuffer(); return new Promise((res,rej)=>this.ctx.decodeAudioData(a,res,rej)); };
+      const decode=async (url)=>{ const r=await fetch(url); if(!r.ok) throw new Error('fetch failed'); const a=await r.arrayBuffer(); return new Promise((res,rej)=>this.ctx.decodeAudioData(a,res,rej)); };
+      const tryDecodeList = async (urls)=>{
+        for(const u of urls){ try{ const buf = await decode(u); return { buf, url:u }; }catch{} }
+        return { buf:null, url:null };
+      };
       try{
-        const [bg, mv, tm] = await Promise.all([
-          decode('background.mp3').catch(()=>null),
-          decode('movement.mp3').catch(()=>null),
-          decode('timer.mp3').catch(()=>null),
-        ]);
-        this.buffers.background=bg; this.buffers.movement=mv; this.buffers.timer=tm;
+        const bgTry = await tryDecodeList(['background.mp3','Backgorund.mp3','Background.mp3']);
+        const mvTry = await tryDecodeList(['movement.mp3','Movement.mp3']);
+        const tmTry = await tryDecodeList(['timer.mp3','Timer.mp3']);
+        this.buffers.background=bgTry.buf; this.buffers.movement=mvTry.buf; this.buffers.timer=tmTry.buf;
+        // Remember last successful URLs for HTMLAudio fallback
+        this._bgUrl = bgTry.url || 'background.mp3';
+        this._mvUrl = mvTry.url || 'movement.mp3';
+        this._tmUrl = tmTry.url || 'timer.mp3';
         this.loaded=true; this.loading=false;
         // Autostart background loop if available
         this.startBackground();
@@ -410,7 +416,16 @@
       }
       // Fallback: HTMLAudio element routed into WebAudio
       try{
-        if(!this.bgEl){ this.bgEl=new Audio('background.mp3'); this.bgEl.loop=true; this.bgEl.preload='auto'; this.bgEl.crossOrigin='anonymous'; }
+        const candidates=[this._bgUrl||'background.mp3','Backgorund.mp3','Background.mp3'];
+        if(!this.bgEl){ this.bgEl=new Audio(); this.bgEl.loop=true; this.bgEl.preload='auto'; this.bgEl.crossOrigin='anonymous'; }
+        // Try candidates until one can play
+        const tryPlay = (i=0)=>{
+          if(i>=candidates.length) return;
+          this.bgEl.src=candidates[i];
+          const p=this.bgEl.play();
+          if(p&&p.catch){ p.catch(()=>{ tryPlay(i+1); }); }
+        };
+        tryPlay(0);
         const ensureNode=()=>{ try{ if(!this.bgEl._node){ const ms=this.ctx.createMediaElementSource(this.bgEl); ms.connect(this.bgGain); this.bgEl._node=ms; } }catch{} };
         ensureNode(); const p=this.bgEl.play(); if(p&&p.catch){ p.catch(()=>{}); }
       }catch{}
@@ -714,7 +729,7 @@
             const i=idxs[s]; const pick=specials[(Math.random()*specials.length)|0]; this.bots[i].kind=pick;
           }
           this.exitRect=exit;
-          this.mist=new ParticleMist(PARTICLE_COUNT, this.obstacles);
+          this.mist=new ParticleMist(PARTICLE_COUNT);
           this.trails.player=new Trail('#ffffff', 600);
           const colorOf=(k)=> k==='tele'?'#bb66ff': k==='eater'?'#ffaa44': k==='cloner'?'#66ffee': k==='grower'?'#ff66aa': k==='phase'?'#99ff99': k==='mimic'?'#ffffff': k==='turret'?'#ffbbcc': k==='stalker'?'#66aaff':'#ff2a2a';
           this.trails.bots=this.bots.map(b=>new Trail(colorOf(b.kind), 500));
@@ -756,7 +771,7 @@
         game.bots=[ new Bot(pos || randomFreePoint(game.obstacles, BOT_RADIUS), 'hunter') ];
       })();
       this.exitRect={x:W()*0.75-13,y:H()*0.5-13,w:26,h:26};
-      this.mist=new ParticleMist(PARTICLE_COUNT, this.obstacles);
+      this.mist=new ParticleMist(PARTICLE_COUNT);
       this.trails.player=new Trail('#ffffff', 1500);
       const colorOfF=(k)=> k==='tele'?'#bb66ff': k==='eater'?'#ffaa44': k==='cloner'?'#66ffee': k==='grower'?'#ff66aa': k==='phase'?'#99ff99': k==='mimic'?'#ffffff': k==='turret'?'#ffbbcc': k==='stalker'?'#66aaff':'#ff2a2a';
       this.trails.bots=this.bots.map(b=>new Trail(colorOfF(b.kind), 1200));

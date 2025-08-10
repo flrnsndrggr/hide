@@ -1,5 +1,10 @@
-const CACHE = 'matrix-hns-v3';
-const ASSETS = ['/', '/index.html', '/manifest.webmanifest'];
+const CACHE = 'matrix-hns-v4';
+const ASSETS = [
+  '/',
+  '/index.html',
+  '/manifest.webmanifest',
+  '/sw.js',
+];
 
 self.addEventListener('install', e => {
   self.skipWaiting();
@@ -27,4 +32,18 @@ self.addEventListener('fetch', e => {
     );
     return;
   }
+
+  // Audio: stale-while-revalidate
+  if (e.request.destination === 'audio' || url.pathname.toLowerCase().endsWith('.mp3')) {
+    e.respondWith(
+      caches.open(CACHE).then(async c => {
+        const cached = await c.match(e.request);
+        const fetchPromise = fetch(e.request).then(resp => { if (resp && resp.ok) c.put(e.request, resp.clone()); return resp; }).catch(() => cached);
+        return cached || fetchPromise;
+      })
+    );
+    return;
+  }
+
+  // Default: passthrough for other requests
 });
