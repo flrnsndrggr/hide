@@ -111,14 +111,16 @@
         let vx = ex - p.x, vy = ey - p.y; // base attraction to exit
         // Normalize base
         const bl=Math.hypot(vx,vy)||1; let exux=vx/bl, exuy=vy/bl; vx=exux*pol.exitWeight; vy=exuy*pol.exitWeight;
-        // Compute flee vector from bots + threat metrics (kept separate for blending)
+        // Compute flee vector only from approaching bots + threat metrics (kept separate for blending)
         const Rb = pol.botThreatR||220; const kB = pol.botRepelK||26000;
         let fleeX=0, fleeY=0, minD2=Infinity, txSum=0, tySum=0, threatCount=0;
         for(const b of game.bots||[]){
           const dx = p.x - b.x, dy = p.y - b.y; const d2 = dx*dx+dy*dy; if(d2<1) continue;
-          if(d2 < Rb*Rb){ const w = kB / d2; fleeX += dx*w; fleeY += dy*w; }
+          // approaching if bot velocity points toward the player
+          const approaching = (b.vx||0)*dx + (b.vy||0)*dy > 0;
+          if(d2 < Rb*Rb && approaching){ const w = kB / d2; fleeX += dx*w; fleeY += dy*w; }
           if(d2 < minD2){ minD2 = d2; }
-          if(b.state==='chase' || (game.grid && b.canSee?.(p, game.obstacles, game.cfg))){ threatCount++; txSum += b.x; tySum += b.y; }
+          if(approaching && (b.state==='chase' || (game.grid && b.canSee?.(p, game.obstacles, game.cfg)))){ threatCount++; txSum += b.x; tySum += b.y; }
         }
         const minD = Math.sqrt(minD2||Infinity);
         // Lateral sidestep against average threat direction contributes to flee vector
@@ -145,22 +147,33 @@
           // Nudge toward waypoint lightly to keep progress even while fleeing
           if(game.aiWp){ const wx = game.aiWp.x - p.x, wy = game.aiWp.y - p.y; const wl=Math.hypot(wx,wy)||1; const wpK=0.6; vx += (wx/wl)*wpK; vy += (wy/wl)*wpK; if(wl<18 || losClear) { game.aiWp=null; } }
         }
-        // Stop-and-go scheduling when chased to reset pursuit
-        game.autoStopUntil = game.autoStopUntil||0; game.autoStopCooldown = game.autoStopCooldown||0;
+        // Always keep moving toward exit; remove stop-and-go pauses
         const now = game.time||0;
-        const danger = (threatCount>=2?2:threatCount) + (minD<180?1:0) + (minD<120?1:0);
-        if(danger>=2 && minD<200 && now>=game.autoStopCooldown && now>=game.autoStopUntil){
-          game.autoStopUntil = now + (pol.stopDur||0.22); // brief pause
-          game.autoStopCooldown = now + (pol.stopCd||0.85); // don't spam stops
-        }
-        if(now < game.autoStopUntil){ return [0,0]; }
-        // Repel from obstacles (inflate a bit) with cap
-        const Ro = 42; const kO = 0.045; let oMag=0;
+        // Repel from obstacles stronger and add predictive deflection (never crash)
+        const Ro = 52; const kO = 0.065; let oMag=0;
         for(const o of game.obstacles||[]){
           const nx = Math.max(o.x - Ro, Math.min(p.x, o.x + o.w + Ro));
           const ny = Math.max(o.y - Ro, Math.min(p.y, o.y + o.h + Ro));
           const dx = p.x - nx, dy = p.y - ny; const d = Math.hypot(dx,dy);
           if(d>0 && d < Ro*1.2){ const w = kO * (Ro - d); const ox=(dx/d)*w, oy=(dy/d)*w; vx += ox; vy += oy; oMag += Math.hypot(ox,oy); }
+        }
+        // Predictive anti-collision: if next step would collide, steer tangentially around the nearest obstacle
+        {
+          const L = Math.hypot(vx,vy)||1; let ux=vx/L, uy=vy/L; const step = (p.r||PLAYER_RADIUS) + 10;
+          let hit=null, bestDist=Infinity;
+          for(const o of game.obstacles||[]){
+            if(circleRectCollide(p.x + ux*step, p.y + uy*step, p.r||PLAYER_RADIUS, o)){
+              const cx=o.x+o.w*0.5, cy=o.y+o.h*0.5; const dd=Math.hypot(p.x-cx,p.y-cy);
+              if(dd<bestDist){ bestDist=dd; hit=o; }
+            }
+          }
+          if(hit){
+            // Choose tangent that increases distance to obstacle center
+            const cx=hit.x+hit.w*0.5, cy=hit.y+hit.h*0.5; const vx1=-uy, vy1=ux; const vx2=uy, vy2=-ux;
+            const d1=Math.hypot((p.x+vx1*step)-cx,(p.y+vy1*step)-cy);
+            const d2=Math.hypot((p.x+vx2*step)-cx,(p.y+vy2*step)-cy);
+            const tx = (d1>d2)?vx1:vx2, ty=(d1>d2)?vy1:vy2; const kT=0.9; vx = vx*0.5 + tx*kT; vy = vy*0.5 + ty*kT;
+          }
         }
         // If nearly stationary for a while, bias stronger toward waypoint/exit to break stalls
         game._aiPrevX = game._aiPrevX ?? p.x; game._aiPrevY = game._aiPrevY ?? p.y; game._aiStill = game._aiStill||0; game._aiTprev = game._aiTprev||now;
@@ -169,8 +182,8 @@
         game._aiPrevX = p.x; game._aiPrevY = p.y; game._aiTprev = now;
         if(dt>0){ if(moved < 6*dt){ game._aiStill += dt; } else { game._aiStill = 0; } }
         if(game._aiStill > 0.35){
-          // Reduce obstacle repulsion and re-assert exit/waypoint intent
-          const boost = 0.8; vx += exux*boost; vy += exuy*boost; if(game.aiWp){ const wx=game.aiWp.x-p.x, wy=game.aiWp.y-p.y; const wl=Math.hypot(wx,wy)||1; vx += (wx/wl)*0.6; vy += (wy/wl)*0.6; }
+          // Re-assert exit/waypoint intent more strongly to break stalls (allow sharp turns)
+          const boost = 1.1; vx += exux*boost; vy += exuy*boost; if(game.aiWp){ const wx=game.aiWp.x-p.x, wy=game.aiWp.y-p.y; const wl=Math.hypot(wx,wy)||1; vx += (wx/wl)*0.8; vy += (wy/wl)*0.8; }
         }
         // Small jitter if almost zero to prevent stalls
         if(Math.abs(vx)+Math.abs(vy) < 0.001){ vx += (Math.random()*2-1)*0.1; vy += (Math.random()*2-1)*0.1; }
