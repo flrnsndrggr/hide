@@ -105,17 +105,42 @@
     if(game?.autoMode && game.screen==='play' && game.running && !game.overlayActive){
       try{
         const p = game.player; if(!p) return [0,0];
+        const pol = (game.aiPolicyCurrent || game.aiPolicy || defaultAIPolicy());
         // Target: exit center
         const ex=game.exitRect.x+game.exitRect.w*0.5, ey=game.exitRect.y+game.exitRect.h*0.5;
         let vx = ex - p.x, vy = ey - p.y; // attraction to exit
         // Normalize base
-        const bl=Math.hypot(vx,vy)||1; vx/=bl; vy/=bl;
-        // Repel from bots
-        const Rb = 200; const kB = 24000; // weight constants
+        const bl=Math.hypot(vx,vy)||1; vx=(vx/bl)*pol.exitWeight; vy=(vy/bl)*pol.exitWeight;
+        // Repel from bots + compute threat metrics
+        const Rb = pol.botThreatR||220; const kB = pol.botRepelK||26000; // weight constants
+        let minD2=Infinity, txSum=0, tySum=0, threatCount=0;
         for(const b of game.bots||[]){
           const dx = p.x - b.x, dy = p.y - b.y; const d2 = dx*dx+dy*dy; if(d2<1) continue;
           if(d2 < Rb*Rb){ const w = kB / d2; vx += dx*w; vy += dy*w; }
+          if(d2 < minD2){ minD2 = d2; }
+          // Consider as threat if chasing or has LOS
+          if(b.state==='chase' || (game.grid && b.canSee?.(p, game.obstacles, game.cfg))){
+            threatCount++; txSum += b.x; tySum += b.y;
+          }
         }
+        const minD = Math.sqrt(minD2||Infinity);
+        // Lateral sidestep against average threat direction
+        if(threatCount>0 && isFinite(minD)){
+          const bx = txSum/threatCount, by = tySum/threatCount;
+          const ax = p.x - bx, ay = p.y - by; const al = Math.hypot(ax,ay)||1;
+          // Perpendicular to attacker vector
+          const px = -ay/al, py = ax/al; const kS = (pol.sidestepK||0.22) + Math.max(0, (200-minD))/800; // stronger when close
+          vx += px * kS; vy += py * kS;
+        }
+        // Stop-and-go scheduling when chased to reset pursuit
+        game.autoStopUntil = game.autoStopUntil||0; game.autoStopCooldown = game.autoStopCooldown||0;
+        const now = game.time||0;
+        const danger = (threatCount>=2?2:threatCount) + (minD<180?1:0) + (minD<120?1:0);
+        if(danger>=2 && minD<200 && now>=game.autoStopCooldown && now>=game.autoStopUntil){
+          game.autoStopUntil = now + (pol.stopDur||0.22); // brief pause
+          game.autoStopCooldown = now + (pol.stopCd||0.85); // don't spam stops
+        }
+        if(now < game.autoStopUntil){ return [0,0]; }
         // Repel from obstacles (inflate a bit)
         const Ro = 42; const kO = 0.045;
         for(const o of game.obstacles||[]){
@@ -240,6 +265,20 @@
   // Safe localStorage helpers
   function safeGet(k){ try{ return localStorage.getItem(k); }catch{ return null; } }
   function safeSet(k,v){ try{ localStorage.setItem(k,v); }catch{} }
+  // Automode learning: policy defaults and storage keys
+  function defaultAIPolicy(){
+    return {
+      exitWeight: 1.0,       // scales exit attraction
+      botThreatR: 220,       // danger radius
+      botRepelK: 26000,      // inverse-square repulsion strength
+      sidestepK: 0.22,       // lateral sidestep base
+      stopDur: 0.22,         // stop duration (s)
+      stopCd: 0.85           // stop cooldown (s)
+    };
+  }
+  function clampNum(v, a, b){ return v<a?a : (v>b?b : v); }
+  const AI_STORAGE_KEY = 'hide_ai_policy_v1';
+  const AI_TRIAL_KEY   = 'hide_ai_trial_v1';
   // Bot kind -> color helper (single source of truth)
   function botColor(kind){
     return kind==='tele'?'#bb66ff'
@@ -597,6 +636,8 @@
       this.cloneTimer = 3.0 + Math.random()*3.0;
       this.eatTimer = 0.2;
       this.growMax = BOT_RADIUS*1.9;
+      // Stuck detection and PF throttling
+      this._px=this.x; this._py=this.y; this._stuck=0; this._skipOnce=0; this._pfCooldown=0;
     }
     setDirectPath(grid, tx, ty){ const p=grid.findPath(this.x,this.y,tx,ty); if(p&&p.length>1){ this.path=p; this.pathIndex=1; this.pathTimer=0; } }
     canSee(player, obstacles, cfg){
@@ -638,7 +679,7 @@
         if(grid.losClear(this.x,this.y,player.x,player.y,obstacles)){ this.seek(player.x,player.y,dt); }
         else{
           if(canTick && this.pathTimer<=0){
-            if(game.pfQueue && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:player.x, ty:player.y}); }
+            if(game.pfQueue && (this._pfCooldown||0)<=0 && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:player.x, ty:player.y}); this._pfCooldown=0.15; }
             this.pathTimer=cfg.botPathRecalc;
           }
           this.followPath(dt, obstacles); // FIX: pass obstacles
@@ -647,14 +688,14 @@
       } else if(this.state==='search'){
         if(this.lastSeen){
           if(canTick && this.pathTimer<=0){
-            if(game.pfQueue && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:this.lastSeen.x, ty:this.lastSeen.y}); }
+            if(game.pfQueue && (this._pfCooldown||0)<=0 && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:this.lastSeen.x, ty:this.lastSeen.y}); this._pfCooldown=0.15; }
             this.pathTimer=cfg.botPathRecalc*1.1;
           }
           if(Math.hypot(this.x-this.lastSeen.x,this.y-this.lastSeen.y)<18){
             if(!this.searchPoints.length) this.planSearchAround(this.lastSeen,cfg,grid);
             const target=this.searchPoints[this.currentSearch%Math.max(1,this.searchPoints.length)];
             if(canTick && this.pathTimer<=0){
-              if(game.pfQueue && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:target.x, ty:target.y}); }
+              if(game.pfQueue && (this._pfCooldown||0)<=0 && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:target.x, ty:target.y}); this._pfCooldown=0.15; }
               this.pathTimer=cfg.botPathRecalc*1.2; this.currentSearch++; if(this.currentSearch>this.searchPoints.length*2){ this.state='patrol'; }
             }
           }
@@ -664,12 +705,17 @@
         if(!this.patrolPoints.length) this.setPatrol(grid);
         const t=this.patrolPoints[this.currentPatrol%this.patrolPoints.length];
         if(canTick && this.pathTimer<=0){
-          if(game.pfQueue && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:t.x, ty:t.y}); }
+          if(game.pfQueue && (this._pfCooldown||0)<=0 && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:t.x, ty:t.y}); this._pfCooldown=0.15; }
           this.pathTimer=cfg.botPathRecalc*1.3;
         }
         this.followPath(dt, obstacles); // FIX
         if(Math.hypot(this.x-t.x,this.y-t.y)<18) this.currentPatrol++;
       }
+      // Stuck detection and back-off replan
+      const moved = Math.hypot(this.x - this._px, this.y - this._py);
+      this._px = this.x; this._py = this.y;
+      if(moved < 0.5) this._stuck += dt; else this._stuck = 0;
+      if(this._stuck > 0.35){ this.path = []; this.pathIndex = 0; this.pathTimer = (this.pathTimer||0) + 0.25; }
     }
     followPath(dt, obstacles){
       if(!this.path||this.pathIndex>=this.path.length){ this.vx=0; this.vy=0; return; }
@@ -678,6 +724,7 @@
       let nx=this.x+this.vx*dt, ny=this.y+this.vy*dt;
       if(nx<this.r)nx=this.r; if(ny<this.r)ny=this.r; if(nx>W()-this.r)nx=W()-this.r; if(ny>H()-this.r)ny=H()-this.r;
       for(const o of obstacles){ if(circleRectCollide(nx,ny,this.r,o)){ const tryX=this.x+this.vx*dt; if(!circleRectCollide(tryX,this.y,this.r,o)){ nx=tryX; ny=this.y; this.vy=0; } else { const tryY=this.y+this.vy*dt; if(!circleRectCollide(this.x,tryY,this.r,o)){ ny=tryY; nx=this.x; this.vx=0; } else { nx=this.x; ny=this.y; this.vx=0; this.vy=0; } } } }
+      if(nx===this.x && ny===this.y){ if((this._skipOnce|=0) < 1){ this.pathIndex++; this._skipOnce=1; } } else { this._skipOnce=0; }
       this.x=nx; this.y=ny;
     }
     seek(tx,ty,dt){ const dx=tx-this.x, dy=ty-this.y, d=Math.hypot(dx,dy)||1, n=[dx/d,dy/d]; this.vx=n[0]*this.speed; this.vy=n[1]*this.speed; this.x+=this.vx*dt; this.y+=this.vy*dt; }
@@ -723,6 +770,12 @@
     mist: new ParticleMist(PARTICLE_COUNT),
     pfQueue: [],
     prevBotStates: new Map(),
+    // Automode learning state
+    aiBest: null,           // { policy, bestScore }
+    aiPolicy: null,         // best/base policy
+    aiPolicyCurrent: null,  // candidate policy used this run
+    aiExplorationEps: 0.25,
+    aiNoiseScale: 0.18,
     // Highscore helpers
     getScores(){ try{ const s=safeGet('hide_highscores'); return s?JSON.parse(s):[]; }catch{ return []; } },
     saveScores(arr){ try{ safeSet('hide_highscores', JSON.stringify(arr)); }catch{} },
@@ -776,12 +829,51 @@
       },0);
     },
     init(){ this.showHome(); },
+    // --- Automode learning helpers ---
+    aiLoad(){
+      const raw = safeGet(AI_STORAGE_KEY);
+      if(raw){ try{ this.aiBest = JSON.parse(raw); }catch{ this.aiBest=null; } }
+      if(!this.aiBest || !this.aiBest.policy){ this.aiBest = { policy: defaultAIPolicy(), bestScore: 0 }; }
+      this.aiPolicy = this.aiBest.policy;
+    },
+    aiSaveBest(){ try{ safeSet(AI_STORAGE_KEY, JSON.stringify(this.aiBest)); }catch{} },
+    aiSampleCandidate(){
+      const base = this.aiPolicy || defaultAIPolicy();
+      const rnd = Math.random();
+      const explore = rnd < this.aiExplorationEps;
+      const noise = (s)=> (1 + (Math.random()*2-1)*this.aiNoiseScale*s);
+      const c = Object.assign({}, base);
+      if(explore){
+        c.exitWeight = clampNum(c.exitWeight * noise(1), 0.6, 1.6);
+        c.botThreatR = Math.round(clampNum(c.botThreatR * noise(1), 160, 320));
+        c.botRepelK  = Math.round(clampNum(c.botRepelK  * noise(1), 15000, 45000));
+        c.sidestepK  = clampNum(c.sidestepK * noise(1), 0.05, 0.6);
+        c.stopDur    = clampNum(c.stopDur   * noise(1), 0.06, 0.6);
+        c.stopCd     = clampNum(c.stopCd    * noise(1), 0.4,  2.2);
+      }
+      return c;
+    },
+    aiBeginRun(){
+      if(!this.aiPolicy) this.aiLoad();
+      const cand = this.aiSampleCandidate();
+      this.aiPolicyCurrent = cand;
+      try{ safeSet(AI_TRIAL_KEY, JSON.stringify({ policy: cand, t: Date.now() })); }catch{}
+    },
+    aiEndRun(score){
+      if(!this.aiPolicy) this.aiLoad();
+      const best = (this.aiBest && typeof this.aiBest.bestScore==='number') ? this.aiBest.bestScore : 0;
+      if(score > best){ this.aiBest = { policy: this.aiPolicyCurrent || this.aiPolicy || defaultAIPolicy(), bestScore: score }; this.aiSaveBest(); }
+      // keep last candidate for transparency
+      try{ const prev = safeGet(AI_TRIAL_KEY); if(prev){ const obj=JSON.parse(prev); obj.score=score; safeSet(AI_TRIAL_KEY, JSON.stringify(obj)); } }catch{}
+    },
     buildLevel(level){
       this.time = 0;
       this.cfg = genLevelConfig(level);
       this.effects = [];
       this.trails = { player: new Trail('#ffffff', 600), bots: [] };
       this.powerUps = [];
+      // Automode stop-and-go timers
+      this.autoStopUntil = 0; this.autoStopCooldown = 0;
       // Bag for fair power-up distribution (ensures equal likelihood over small samples)
       if(!this.powerUpBag) this.powerUpBag = [];
       this.pfQueue = [];
@@ -789,7 +881,6 @@
       this.bg = { x: W()*0.5, y: H()*0.5 };
 
       this.obstacles = makeObstacles(this.cfg.obstacleCount);
-      this.grid = new Grid(this.obstacles, BOT_RADIUS);
 
       const p0 = randomFreePoint(this.obstacles, PLAYER_RADIUS);
       this.player = new Player(p0);
@@ -818,8 +909,8 @@
       for(let i=0;i<otherCount;i++) kinds.push(otherKindsPool[Math.floor(Math.random()*otherKindsPool.length)]);
       // shuffle to distribute
       for(let i=kinds.length-1;i>0;i--){ const j=(Math.random()* (i+1))|0; [kinds[i],kinds[j]] = [kinds[j],kinds[i]]; }
-      // Enforce fair spawn distances
-      const minPlayerDist = Math.max(220, Math.min(420, this.cfg.botSightRange*0.6));
+      // Enforce fair spawn distances (increase no-spawn zone around player)
+      const minPlayerDist = Math.max(300, Math.min(520, this.cfg.botSightRange*0.75));
       const minBotGap = BOT_RADIUS * 6; // spacing between bots
       for(const k of kinds){
         let pos = null;
@@ -837,6 +928,10 @@
         this.bots.push(b);
         this.trails.bots.push(new Trail(botColor(b.kind), 300));
       }
+
+      // Build navigation grid inflated for worst-case bot size (grower max)
+      const maxBotR = Math.max(BOT_RADIUS, ...this.bots.map(bb=> (bb.kind==='grower'? bb.growMax : BOT_RADIUS)));
+      this.grid = new Grid(this.obstacles, maxBotR);
 
       const ensureBag = ()=>{
         if(!this.powerUpBag || this.powerUpBag.length===0){
@@ -879,6 +974,8 @@
       this.runs = Number(safeGet('hide_runs')||0) + 1;
       safeSet('hide_runs', String(this.runs));
       this.level = 1; this.buildLevel(this.level);
+      // Start AI candidate for this run
+      this.aiBeginRun();
       this.running=true;
     },
     update(dt){
@@ -911,6 +1008,8 @@
 
       this.stepObstacles(dt, playerSp);
       const dtm = dt * moveFactor;
+      // PF enqueue cooldown decay
+      for(const b of this.bots){ if(b._pfCooldown>0){ b._pfCooldown -= dt; if(b._pfCooldown<0) b._pfCooldown=0; } }
       // Additional guarantee: when input stops, instantly clear bot velocities
       if(!inputActive){ for(const b of this.bots){ b.vx=0; b.vy=0; } }
       if(this.slowTimer>0){ this.slowTimer-=dtm; if(this.slowTimer<=0){ this.botSpeedMul=1; } }
@@ -938,14 +1037,23 @@
               let coll=false; for(const o of this.obstacles){ if(circleRectCollide(nx,ny,b.r+2,o)){ coll=true; break; } }
               if(!coll){ found={x:nx,y:ny}; break; }
             }
-            if(found){ this.effects.push(new Burst(b.x,b.y,'#bb66ff',180)); b.x=found.x; b.y=found.y; this.effects.push(new Burst(b.x,b.y,'#bb66ff',180)); b.state='chase'; b.lastSeen={x:this.player.x,y:this.player.y}; }
+            if(found){
+              try{
+                this.effects.push(new Burst(b.x,b.y,'#bb66ff',180));
+                b.x=found.x; b.y=found.y;
+                this.effects.push(new Burst(b.x,b.y,'#bb66ff',180));
+                b.state='chase'; b.lastSeen={x:this.player.x,y:this.player.y};
+              }catch(e){
+                console.error('Teleport sentry error:', e);
+              }
+            }
             b.teleTimer = 3.0 + Math.random()*3.0;
           }
         }
         if(b.kind==='eater'){
           b.eatTimer -= dtm; if(b.eatTimer<=0){
             const sp=Math.hypot(b.vx,b.vy)||1; const nx=b.vx/sp, ny=b.vy/sp; const bx=b.x+nx*(b.r+6), by=b.y+ny*(b.r+6);
-            if(this.carveAt(bx,by, 10)) { this.effects.push(new Burst(bx,by,'#ffffff',120)); this.grid = new Grid(this.obstacles, BOT_RADIUS); }
+            if(this.carveAt(bx,by, 10)) { this.effects.push(new Burst(bx,by,'#ffffff',120)); const maxR=Math.max(BOT_RADIUS, ...this.bots.map(bb=> (bb.kind==='grower'? bb.growMax : BOT_RADIUS))); this.grid = new Grid(this.obstacles, maxR); this.pfQueue.length=0; for(const bb of this.bots){ bb.path=[]; bb.pathIndex=0; } }
             b.eatTimer = 0.18;
           }
         }
@@ -1059,6 +1167,9 @@
             this.effects.push(new Burst(cx, cy, '#ffffff', 200));
             this.audio?.tone?.(180,0.05,'square',0.05,0.002,0.03);
             this.bots.splice(i,1);
+            if(this.trails && this.trails.bots && this.trails.bots.length>i){
+              this.trails.bots.splice(i,1);
+            }
           }
         }
       } else {
@@ -1077,7 +1188,10 @@
           }
           this.running=false;
           // Highscore flow
-          const score=this.level; if(this.qualifies(score)) this.promptHighscore(score); else this.showHome();
+          const score = this.level*100 + Math.min(99, Math.floor(this.time));
+          // Update AI learning
+          this.aiEndRun(score);
+          if(this.qualifies(this.level)) this.promptHighscore(this.level); else this.showHome();
         }
       }
       for(let bi=0; bi<this.bots.length; bi++){
@@ -1317,7 +1431,7 @@
         }
       }
     }
-    if(teleported){ this.grid = new Grid(this.obstacles, BOT_RADIUS); }
+    if(teleported){ const maxR=Math.max(BOT_RADIUS, ...this.bots.map(bb=> (bb.kind==='grower'? bb.growMax : BOT_RADIUS))); this.grid = new Grid(this.obstacles, maxR); this.pfQueue.length=0; for(const bb of this.bots){ bb.path=[]; bb.pathIndex=0; } }
   };
 
   game.carveAt = function(cx, cy, size=GRID_SIZE){
