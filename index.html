@@ -1409,10 +1409,9 @@
   }
   init();
 
-  // ---------- power visuals ----------
-  function Burst(x,y,col='#ffffff',count=140){ return new window.Burst(x,y,col,count); } // placeholder to keep references if needed
-  // keep CodeRain class in scope
+  // ---------- expose optional classes ----------
   window.CodeRain = CodeRain;
+  window.Burst = Burst;
 
 })();
 </script>
