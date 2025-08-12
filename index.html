@@ -2,12 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#000000">
-  <title>Matrix Hide and Seek</title>
+  <title>Matrix Hide and Seek v2</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.svg">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='8' fill='%23000'/%3E%3Ccircle cx='32' cy='32' r='14' fill='%23fff'/%3E%3C/svg%3E">
@@ -20,31 +21,67 @@
       touch-action: none; overscroll-behavior: none;
       -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
     }
-    #hud { position: fixed; left: env(safe-area-inset-left); top: env(safe-area-inset-top); right: env(safe-area-inset-right);
-      display: flex; justify-content: space-between; padding: 8px 12px; font-size: clamp(12px, 1.8vw, 16px); pointer-events: none; opacity: .85; z-index: 10; }
-    canvas { display: block; width: 100vw; height: 100dvh; background: #000; }
-    #overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.6);
-      text-align: center; backdrop-filter: blur(1px); font-size: 18px; line-height: 1.6; color: #fff; z-index: 20; }
-    #overlay .panel { border: 1px solid #fff; padding: 20px 24px; background: rgba(0,0,0,.2); max-width: 640px; }
-    button { background:#0b0b0b; color:#fff; border:1px solid #2a2a2a; border-radius:6px; }
+    canvas { display:block; width:100vw; height:100dvh; background:#000; }
+    #hud {
+      position: fixed; left: env(safe-area-inset-left); right: env(safe-area-inset-right);
+      top: env(safe-area-inset-top); display:flex; gap:10px; align-items:center;
+      justify-content: space-between; padding: 8px 12px; font-size: clamp(12px, 1.8vw, 16px);
+      pointer-events:none; opacity:.9; z-index:10;
+    }
+    #hud .group { display:flex; gap:8px; align-items:center; }
+    #fps, #status, #level { opacity:.85; }
+    #stealthBar {
+      position: fixed; left: 12px; bottom: calc(12px + env(safe-area-inset-bottom));
+      width: 160px; height: 8px; background: rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.25);
+      z-index: 10; border-radius: 4px; overflow:hidden;
+    }
+    #stealthFill { width:0%; height:100%; background:#7cffa3; }
+    #minimap {
+      position: fixed; right: 12px; top: calc(50px + env(safe-area-inset-top));
+      width: 160px; height: 160px; border:1px solid rgba(255,255,255,.25);
+      background: rgba(0,0,0,.35); backdrop-filter: blur(2px);
+      pointer-events:none; z-index:10; display:none;
+    }
+    #overlay {
+      position: fixed; inset: 0; display:none; align-items:center; justify-content:center;
+      text-align:center; backdrop-filter: blur(2px); z-index: 20;
+      background: rgba(0,0,0,.6); color:#fff; font-size: 18px; line-height: 1.6;
+    }
+    #overlay .panel {
+      border:1px solid #fff; padding: 18px 20px; background: rgba(0,0,0,.25); max-width: 720px;
+    }
+    button {
+      background:#0b0b0b; color:#fff; border:1px solid #2a2a2a; border-radius:6px; padding:8px 10px;
+      cursor:pointer; transition: transform .05s ease;
+    }
     button:active { transform: translateY(1px); }
+    .row { display:flex; gap:8px; align-items:center; justify-content:center; }
+    .col { display:flex; flex-direction:column; gap:8px; align-items:stretch; }
+    label.switch { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    input[type="checkbox"] { transform: scale(1.2); }
   </style>
 </head>
 <body>
-  <div id="hud"><span id="level"></span><span id="status"></span><span id="fps"></span></div>
+  <div id="hud">
+    <div class="group"><span id="level"></span><span id="status"></span></div>
+    <div class="group"><span id="fps"></span></div>
+  </div>
+  <div id="stealthBar"><div id="stealthFill"></div></div>
+  <canvas id="minimap" width="160" height="160"></canvas>
   <div id="overlay"><div class="panel" id="overlayText"></div></div>
   <canvas id="game"></canvas>
+
 <script>
 (function(){
   // ---------- utils ----------
+  const TAU = Math.PI*2;
   const lerp=(a,b,t)=>a+(b-a)*t;
-  const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
-  const clampNum=(v,a,b)=>v<a?a:(v>b?b:v);
-  const dist2=(x1,y1,x2,y2)=>{const dx=x2-x1, dy=y2-y1; return dx*dx+dy*dy;};
-  const TAU=Math.PI*2;
-  function norm(vx,vy){const l=Math.hypot(vx,vy)||1; return [vx/l, vy/l];}
-  function isCoarsePointer(){ return window.matchMedia && window.matchMedia('(pointer:coarse)').matches; }
-  function haptics(ms=15){ try{ navigator.vibrate && navigator.vibrate(ms); }catch{} }
+  const clamp=(v,a,b)=> v<a?a:(v>b?b:v);
+  const dist2=(x1,y1,x2,y2)=>{ const dx=x2-x1, dy=y2-y1; return dx*dx+dy*dy; };
+  const norm=(x,y)=>{ const L=Math.hypot(x,y)||1; return [x/L,y/L]; };
+  const haptics = (ms=15)=>{ try{ navigator.vibrate && navigator.vibrate(ms); }catch{} };
+  const isCoarsePointer = ()=> window.matchMedia && window.matchMedia('(pointer:coarse)').matches;
+  const rndSeeded = (s)=>{ let x = s|0; return ()=> (x=(x^=x<<13, x^=x>>>17, x^=x<<5)>>>0)/4294967296; };
 
   // ---------- canvas + DPR with adaptive render scale ----------
   const canvas = document.getElementById('game');
@@ -55,10 +92,16 @@
   const hudFps = document.getElementById('fps');
   const overlay = document.getElementById('overlay');
   const overlayText = document.getElementById('overlayText');
+  const minimapEl = document.getElementById('minimap');
+  const mmCtx = minimapEl.getContext('2d');
+  const stealthFill = document.getElementById('stealthFill');
 
   let DPR = Math.min(3, window.devicePixelRatio || 1);
-  let renderScale = 1.0;    // adaptive scaling on perf dips
+  let renderScale = 1.0; // adaptive on perf dips
   let scale = DPR * renderScale;
+
+  const W = ()=> canvas.width/scale;
+  const H = ()=> canvas.height/scale;
 
   function fitCanvas(){
     const vw = Math.max(1, window.innerWidth);
@@ -71,19 +114,19 @@
     canvas.height = Math.round(vh * scale);
   }
   function setRenderScale(s){
-    const ns = clamp(s, 0.6, 1.0);
+    const ns = clamp(s, 0.7, 1.0);
     if(Math.abs(ns - renderScale) > 0.01){
-      renderScale = ns;
-      fitCanvas();
-      if(game && game.grid){ game.rebuildObstacleIndex(); } // keep indexes in sync with world sizing
+      renderScale = ns; fitCanvas();
+      if(game && game.grid){ game.rebuildObstacleIndex(); game.buildWorkerGrid(); }
     }
   }
   window.addEventListener('resize', fitCanvas, { passive: true });
   fitCanvas();
-  ['touchmove','gesturestart'].forEach(evt=>document.addEventListener(evt,e=>e.preventDefault(),{passive:false}));
+  ['touchmove','gesturestart'].forEach(evt=> document.addEventListener(evt, e=> e.preventDefault(), { passive:false }));
 
   // ---------- input ----------
   const keys = new Set();
+  let mouseDown = false;
   window.addEventListener('keydown', e=>{
     const k = e.key.toLowerCase();
     if(['arrowup','arrowdown','arrowleft','arrowright','w','a','s','d'].includes(k)) e.preventDefault();
@@ -94,74 +137,123 @@
     if(k==='z'){ game.autoMode = !game.autoMode; }
     if(k==='p'){ game.togglePause(); }
     if(k==='g'){ game.visualsEnabled = !game.visualsEnabled; }
+    if(k==='v'){ game.minimapOn = !game.minimapOn; minimapEl.style.display = game.minimapOn?'block':'none'; }
+    if(k==='o'){ game.showSettings(); }
   }, { passive:false });
   window.addEventListener('keyup', e=> keys.delete(e.key.toLowerCase()), { passive:true });
 
+  // virtual stick for touch
   const joystick = { active:false, cx:0, cy:0, x:0, y:0, radius:84, dead:10, max:72, vec:[0,0], mag:0 };
   function pointerPos(e){ const t=e.touches?e.touches[0]:e; const r=canvas.getBoundingClientRect(); return {x:t.clientX-r.left, y:t.clientY-r.top}; }
-  function startJoy(e){ if(game?.overlayActive) return; const p=pointerPos(e); joystick.active=true; joystick.cx=p.x; joystick.cy=p.y; joystick.x=p.x; joystick.y=p.y; joystick.vec=[0,0]; joystick.mag=0; }
+  function startJoy(e){ if(game?.overlayActive) return; const p=pointerPos(e); joystick.active=true; joystick.cx=p.x; joystick.cy=p.y; joystick.x=p.x; joystick.y=p.y; joystick.vec=[0,0]; joystick.mag=0; mouseDown=true; }
   function moveJoy(e){
     if(!joystick.active) return;
     const p=pointerPos(e); const dx=p.x-joystick.cx, dy=p.y-joystick.cy; const d=Math.hypot(dx,dy); const ang=Math.atan2(dy,dx);
     const clamped=Math.min(joystick.max,d); joystick.x=joystick.cx+Math.cos(ang)*clamped; joystick.y=joystick.cy+Math.sin(ang)*clamped;
     if(d<joystick.dead){ joystick.vec=[0,0]; joystick.mag=0; } else { joystick.mag=clamp((d-joystick.dead)/(joystick.max-joystick.dead),0,1); joystick.vec=[Math.cos(ang),Math.sin(ang)]; }
   }
-  function endJoy(){ joystick.active=false; joystick.vec=[0,0]; joystick.mag=0; }
+  function endJoy(){ joystick.active=false; joystick.vec=[0,0]; joystick.mag=0; mouseDown=false; }
   canvas.addEventListener('pointerdown', startJoy, {passive:false});
   canvas.addEventListener('pointermove', moveJoy,   {passive:false});
   window.addEventListener('pointerup', endJoy, {passive:true});
   window.addEventListener('pointercancel', endJoy, {passive:true});
 
   // ---------- math helpers for collisions ----------
-  function rectsIntersect(a,b){return !(a.x+a.w<b.x||b.x+b.w<a.x||a.y+a.h<b.y||b.y+b.h<a.y);}
+  function rectsIntersect(a,b){ return !(a.x+a.w<b.x||b.x+b.w<a.x||a.y+a.h<b.y||b.y+b.h<a.y); }
   function circleRectCollide(cx,cy,cr,r){ const x=clamp(cx,r.x,r.x+r.w), y=clamp(cy,r.y,r.y+r.h); const dx=cx-x, dy=cy-y; return dx*dx+dy*dy<=cr*cr; }
   function segIntersect(ax,ay,bx,by,cx,cy,dx,dy){ const rpx=bx-ax,rpy=by-ay,spx=dx-cx,spy=dy-cy,den=(-spx*rpy+rpx*spy); if(den===0)return false; const s=(-rpy*(ax-cx)+rpx*(ay-cy))/den; const t=(spx*(ay-cy)-spy*(ax-cx))/den; return s>=0&&s<=1&&t>=0&&t<=1; }
-  function lineRectIntersect(x1,y1,x2,y2,r){ const x3=r.x,y3=r.y,x4=r.x+r.w,y4=r.y+r.h; return segIntersect(x1,y1,x2,y2,x3,y3,x4,y3)||segIntersect(x1,y1,x2,y2,x4,y3,x4,y4)||segIntersect(x1,y1,x2,y2,x4,y4,x3,y4)||segIntersect(x1,y1,x2,y2,x3,y4,x3,y3); }
+  function lineRectIntersect(x1,y1,x2,y2,r){ const x3=r.x,y3=r.y,x4=r.x+r.w,y4=r.y+r.h;
+    return segIntersect(x1,y1,x2,y2,x3,y3,x4,y3)||segIntersect(x1,y1,x2,y2,x4,y3,x4,y4)||
+           segIntersect(x1,y1,x2,y2,x4,y4,x3,y4)||segIntersect(x1,y1,x2,y2,x3,y4,x3,y3); }
 
   // ---------- constants ----------
-  const W = ()=>canvas.width/scale, H = ()=>canvas.height/scale;
-  const GRID_SIZE=16, BOT_RADIUS=14, PLAYER_RADIUS=12, PARTICLE_COUNT=3800, SAFE_PU=36;
+  const GRID_SIZE = 16;
+  const PLAYER_RADIUS = 12;
+  const BOT_RADIUS = 14;
+  const PARTICLE_COUNT = 3200;
 
-  // ---------- visuals: code rain layer ----------
-  class CodeRain{
-    constructor(){
-      this.cols=[]; this.charSize=14; this.enabled=true; this.alpha=0.12;
-      this.setSize();
+  // ---------- Audio (cleaned and robust) ----------
+  class Sfx{
+    constructor(){ this.ctx=null; this.muted=false; this.master=null; this.fx=null; this.loaded=false; }
+    init(){
+      if(this.ctx) return;
+      try{ this.ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch{}
+      if(!this.ctx) return;
+      this.master=this.ctx.createGain(); this.master.gain.value=this.muted?0:1; this.master.connect(this.ctx.destination);
+      this.fx=this.ctx.createGain(); this.fx.gain.value=0.8; this.fx.connect(this.master);
+      // ambient procedural pad if no file present
+      this.makePad();
     }
-    setSize(){
-      const cw=W(), ch=H();
-      const cs=this.charSize; const cols=Math.max(12, Math.floor(cw/(cs*1.2)));
-      this.cols.length=0;
-      for(let i=0;i<cols;i++){
-        this.cols.push({ x:(i+0.5)*cs*1.2, y:Math.random()*-ch, speed: (60 + Math.random()*140), gap: Math.floor(8+Math.random()*16), seed:Math.random()*1000 });
-      }
+    toggleMute(){ this.muted=!this.muted; if(this.master) this.master.gain.value=this.muted?0:1; }
+    now(){ return this.ctx?this.ctx.currentTime:0; }
+    tone(f=440, dur=0.08, type='sine', gain=0.03, a=0.005, r=0.05){
+      if(!this.ctx) return; const t=this.now(); const o=this.ctx.createOscillator(); const g=this.ctx.createGain();
+      o.type=type; o.frequency.value=f; o.connect(g); g.connect(this.fx);
+      g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gain,t+a); g.gain.setTargetAtTime(0,t+a+dur,r);
+      o.start(t); o.stop(t+a+dur+r*4);
     }
-    step(dt){
-      if(!this.enabled) return;
-      const ch=H();
-      for(const c of this.cols){
-        c.y += c.speed*dt;
-        if(c.y > ch + 80) { c.y = -Math.random()*ch; c.speed = 60 + Math.random()*140; }
-      }
+    click(){ this.tone(880,0.03,'square',0.02,0.001,0.03); }
+    caught(){ this.tone(180,0.18,'sawtooth',0.05,0.002,0.06); }
+    exit(){ this.tone(1100,0.08,'triangle',0.05,0.002,0.04); setTimeout(()=>this.tone(1400,0.08,'sine',0.04,0.002,0.04),90); }
+    alert(){ this.tone(620,0.07,'sine',0.03); setTimeout(()=>this.tone(740,0.06,'sine',0.03),80); }
+    startTimer(){ this.timerOsc = this.makeTick(true); }
+    stopTimer(){ if(this.timerOsc){ try{ this.timerOsc.stop(); }catch{} this.timerOsc=null; } }
+    makeTick(loop){
+      if(!this.ctx) return null;
+      const o=this.ctx.createOscillator(); const g=this.ctx.createGain();
+      o.type='triangle'; o.frequency.value=3.0; g.gain.value=0.02; o.connect(g); g.connect(this.fx);
+      o.start(); if(!loop){ o.stop(this.now()+0.5); } return o;
     }
-    draw(ctx, t){
-      if(!this.enabled) return;
-      ctx.save();
-      ctx.globalAlpha=this.alpha;
-      const cs=this.charSize*scale, g='01ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-      ctx.font = `${cs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
-      ctx.textAlign='center'; ctx.textBaseline='top';
-      for(const c of this.cols){
-        const x=c.x*scale;
-        for(let k=-20;k<40;k++){
-          const y=(c.y + k*c.gap)*scale;
-          if(y<-40 || y>canvas.height+40) continue;
-          const ch = g[(k + Math.floor(t*10) + ((c.seed*37)|0)) % g.length];
-          ctx.fillStyle = k===0 ? 'rgba(160,255,200,0.9)' : 'rgba(80,220,160,0.45)';
-          ctx.fillText(ch, x, y);
+    makePad(){
+      if(!this.ctx) return;
+      const now=this.now();
+      const mk = (freq, detune, gain)=>{
+        const o=this.ctx.createOscillator(); const g=this.ctx.createGain();
+        o.type='sine'; o.frequency.value=freq; o.detune.value=detune;
+        g.gain.value=0.0; o.connect(g); g.connect(this.master);
+        g.gain.setValueAtTime(0,now);
+        g.gain.linearRampToValueAtTime(gain, now+4);
+        o.start(now+Math.random());
+        return {o,g};
+      };
+      const a=mk(58, 2, 0.07), b=mk(116, -3, 0.06), c=mk(174, 1, 0.04);
+      this.ambient=[a,b,c];
+    }
+  }
+
+  // ---------- visuals: minimalist BG grid + soft color shader ----------
+  class PsyFractal{
+    constructor(){ this.off=null; this.oc=null; this.w=0; this.h=0; this.params=null; }
+    randomize(){ this.params={ f1:1.2+Math.random()*1.8, f2:0.9+Math.random()*1.8, f3:0.6+Math.random()*1.1,
+      sp1:0.25+Math.random()*0.5, sp2:0.2+Math.random()*0.5, sp3:0.2+Math.random()*0.5,
+      hueBase:Math.floor(Math.random()*360), hueSwing:80+Math.random()*160 }; }
+    ensure(cw,ch){
+      const targetW=Math.max(64, Math.floor(cw/3)), targetH=Math.max(64, Math.floor(ch/3));
+      if(!this.off){ this.off=document.createElement('canvas'); this.oc=this.off.getContext('2d'); }
+      if(this.w!==targetW||this.h!==targetH){ this.w=targetW; this.h=targetH; this.off.width=this.w; this.off.height=this.h; }
+      if(!this.params) this.randomize();
+    }
+    drawTo(ctxMain, t){
+      if(!game.visualsEnabled) return;
+      this.ensure(canvas.width, canvas.height);
+      const {w,h,oc} = this, p=this.params;
+      const img=oc.createImageData(w,h), d=img.data;
+      for(let y=0,i=0;y<h;y++){
+        for(let x=0;x<w;x++,i+=4){
+          const nx=x/w*TAU, ny=y/h*TAU;
+          const v=Math.sin(nx*p.f1+t*p.sp1)+Math.sin(ny*p.f2+t*p.sp2)+Math.sin((nx+ny)*p.f3+t*p.sp3);
+          const vv=(v+3)/6;
+          const hue=(p.hueBase + p.hueSwing*vv + t*14)%360, sat=55+Math.floor(35*vv), val=20+Math.floor(52*vv);
+          const c=(val/100)*(sat/100), hh=hue/60, xh=c*(1-Math.abs((hh%2)-1)); let r=0,g=0,b=0;
+          if(hh<1){r=c;g=xh;} else if(hh<2){r=xh;g=c;} else if(hh<3){g=c;b=xh;} else if(hh<4){g=xh;b=c;} else if(hh<5){r=xh;b=c;} else {r=c;b=xh;}
+          const m=(val/100)-c;
+          d[i]=Math.floor((r+m)*255); d[i+1]=Math.floor((g+m)*255); d[i+2]=Math.floor((b+m)*255); d[i+3]=150;
         }
       }
-      ctx.restore();
+      oc.putImageData(img,0,0);
+      ctxMain.save(); ctxMain.globalAlpha=0.22; ctxMain.globalCompositeOperation='screen';
+      ctxMain.drawImage(this.off, 0, 0, canvas.width, canvas.height);
+      ctxMain.restore();
     }
   }
 
@@ -180,231 +272,23 @@
       this.px[i]=x; this.py[i]=y; this.vx[i]=vx; this.vy[i]=vy; this.maxLife[i]=life; this.life[i]=life;
     }
     update(dt){
-      const n=this.count; for(let k=0;k<n;k++){
+      for(let k=0;k<this.count;k++){
         const i=(this.head-1-k+this.max)%this.max;
-        if(this.life[i]<=0) continue; this.life[i]-=dt; if(this.life[i]<=0) continue;
+        const l=this.life[i]-dt; this.life[i]=l; if(l<=0) continue;
         this.vx[i]*=0.92; this.vy[i]*=0.92; this.px[i]+=this.vx[i]*dt; this.py[i]+=this.vy[i]*dt;
       }
     }
     draw(ctx){
-      ctx.save(); ctx.fillStyle=this.color; const n=this.count; const sz=2.6*scale;
-      for(let k=0;k<n;k++){
-        const i=(this.head-1-k+this.max)%this.max; const t=this.life[i]/(this.maxLife[i]||1);
-        if(t<=0) continue; ctx.globalAlpha=Math.max(0, Math.min(1, t*0.85));
+      ctx.save(); ctx.fillStyle=this.color; const sz=2.3*scale;
+      for(let k=0;k<this.count;k++){
+        const i=(this.head-1-k+this.max)%this.max; const t=this.life[i]/(this.maxLife[i]||1); if(t<=0) continue;
+        ctx.globalAlpha=Math.max(0, Math.min(1, t*0.85));
         ctx.fillRect(this.px[i]*scale - sz*0.5, this.py[i]*scale - sz*0.5, sz, sz);
       }
       ctx.restore();
     }
   }
-  class Burst{
-    constructor(x,y,color='#ffffff',count=140){
-      this.color=color; this.n=count; this.px=new Float32Array(count); this.py=new Float32Array(count);
-      this.vx=new Float32Array(count); this.vy=new Float32Array(count); this.life=new Float32Array(count);
-      for(let i=0;i<count;i++){
-        this.px[i]=x; this.py[i]=y; const a=Math.random()*TAU, s=40+Math.random()*220;
-        this.vx[i]=Math.cos(a)*s; this.vy[i]=Math.sin(a)*s; this.life[i]=0.5+Math.random()*0.6;
-      }
-      this.dead=false;
-    }
-    update(dt){
-      if(this.dead) return; let alive=false;
-      for(let i=0;i<this.n;i++){
-        const l=this.life[i]-dt; this.life[i]=l; if(l>0){ alive=true; this.vx[i]*=0.96; this.vy[i]*=0.96; this.px[i]+=this.vx[i]*dt; this.py[i]+=this.vy[i]*dt; }
-      }
-      this.dead=!alive;
-    }
-    draw(ctx){
-      if(this.dead) return; ctx.save(); ctx.fillStyle=this.color;
-      for(let i=0;i<this.n;i++){ const t=Math.max(0,Math.min(1,this.life[i])); if(t<=0) continue; ctx.globalAlpha=t*0.6; ctx.fillRect(this.px[i]*scale, this.py[i]*scale, 1.6*scale, 1.6*scale); }
-      ctx.restore();
-    }
-  }
 
-  // ---------- powerups ----------
-  class PowerUp{
-    constructor(x,y,type){ this.x=x; this.y=y; this.r=12; this.type=type; this.dead=false; }
-    color(){ switch(this.type){ case 'slow':return'#bbbbbb'; case 'cull':return'#cccccc'; case 'shield':return'#dddddd'; case 'freeze':return'#aaaaaa'; case 'dash':return'#f0f0f0'; case 'predator':return'#ffffff'; default:return'#ffffff'; } }
-    label(){ switch(this.type){ case 'slow':return'S'; case 'cull':return'X'; case 'shield':return'P'; case 'freeze':return'F'; case 'dash':return'D'; case 'predator':return'R'; default:return'?'; } }
-    draw(ctx, t=0){
-      if(this.dead) return; const x=this.x*scale, y=this.y*scale; const col=this.color();
-      ctx.save();
-      ctx.shadowColor=col; ctx.shadowBlur=10*scale; ctx.fillStyle=col; ctx.strokeStyle='#000';
-      const pulse=1+0.08*Math.sin(t*6);
-      ctx.beginPath(); ctx.arc(x,y,this.r*scale*pulse,0,TAU); ctx.fill(); ctx.lineWidth=2*scale; ctx.stroke();
-      ctx.fillStyle='#000'; ctx.font=`${12*scale}px system-ui, sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.globalAlpha=0.9; ctx.fillText(this.label(), x, y+0.5);
-      ctx.restore();
-    }
-  }
-
-  // ---------- audio ----------
-  class Sfx{
-    constructor(){
-      this.ctx=null; this.muted=false;
-      this.master=null; this.bgGain=null; this.fxGain=null;
-      this.buffers={ background:null, movement:null, timer:null };
-      this.bgNode=null; this.bgEl=null; this.timerNode=null; this.movementNode=null;
-      this.loaded=false; this.loading=false; this.bgRetry=null;
-    }
-    init(){
-      if(!this.ctx){ try{ this.ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ this.ctx=null; } }
-      if(!this.ctx) return;
-      if(!this.master){
-        this.master=this.ctx.createGain(); this.master.gain.value=this.muted?0:1; this.master.connect(this.ctx.destination);
-        this.bgGain=this.ctx.createGain(); this.bgGain.gain.value=0.35; this.bgGain.connect(this.master);
-        this.fxGain=this.ctx.createGain(); this.fxGain.gain.value=1.0; this.fxGain.connect(this.master);
-      }
-      this.load();
-      const tryStart = async()=>{ try{ await this.ctx.resume(); }catch{} this.startBackground(); };
-      tryStart();
-      if(!this.bgRetry){ this.bgRetry=setInterval(()=>{ if(!this.isBgPlaying()){ tryStart(); } else { clearInterval(this.bgRetry); this.bgRetry=null; } },1200); }
-      document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && !this.isBgPlaying()) tryStart(); }, { passive:true });
-    }
-    canPlay(){ return !!this.ctx; }
-    toggleMute(){ this.muted=!this.muted; if(this.master) this.master.gain.value=this.muted?0:1; }
-    now(){ return this.ctx?this.ctx.currentTime:0; }
-    async load(){
-      if(this.loading||this.loaded||!this.ctx) return; this.loading=true;
-      const decode=async (url)=>{ const r=await fetch(url); if(!r.ok) throw new Error('fetch failed'); const a=await r.arrayBuffer(); return new Promise((res,rej)=>this.ctx.decodeAudioData(a,res,rej)); };
-      const tryDecodeList = async (urls)=>{ for(const u of urls){ try{ const buf=await decode(u); return { buf, url:u }; }catch{} } return { buf:null, url:null }; };
-      try{
-        const bgTry = await tryDecodeList(['background.mp3','Backgorund.mp3','Background.mp3']);
-        const mvTry = await tryDecodeList(['movement.mp3','Movement.mp3']);
-        const tmTry = await tryDecodeList(['timer.mp3','Timer.mp3']);
-        this.buffers.background=bgTry.buf; this.buffers.movement=mvTry.buf; this.buffers.timer=tmTry.buf;
-        this._bgUrl = bgTry.url || 'background.mp3';
-        this._mvUrl = mvTry.url || 'movement.mp3';
-        this._tmUrl = tmTry.url || 'timer.mp3';
-        this.loaded=true; this.loading=false; this.startBackground();
-      }catch{ this.loading=false; }
-    }
-    isBgPlaying(){ return !!(this.bgNode || (this.bgEl && !this.bgEl.paused)); }
-    startBackground(){
-      if(!this.ctx) return; if(this.isBgPlaying()) return;
-      if(this.buffers.background){
-        try{ const src=this.ctx.createBufferSource(); src.buffer=this.buffers.background; src.loop=true; src.connect(this.bgGain); src.start(); this.bgNode=src; return; }catch{}
-      }
-      try{
-        const candidates=[this._bgUrl||'background.mp3','Backgorund.mp3','Background.mp3'];
-        if(!this.bgEl){ this.bgEl=new Audio(); this.bgEl.loop=true; this.bgEl.preload='auto'; this.bgEl.crossOrigin='anonymous'; }
-        const tryPlay=(i=0)=>{ if(i>=candidates.length) return; this.bgEl.src=candidates[i]; const p=this.bgEl.play(); if(p&&p.catch){ p.catch(()=>tryPlay(i+1)); } };
-        tryPlay(0);
-        const ensureNode=()=>{ try{ if(!this.bgEl._node){ const ms=this.ctx.createMediaElementSource(this.bgEl); ms.connect(this.bgGain); this.bgEl._node=ms; } }catch{} };
-        ensureNode(); const p=this.bgEl.play(); if(p&&p.catch){ p.catch(()=>{}); }
-      }catch{}
-    }
-    stopBackground(){ if(this.bgNode){ try{ this.bgNode.stop(); }catch{} this.bgNode.disconnect(); this.bgNode=null; } }
-    playMovement(){
-      if(!this.ctx||!this.buffers.movement) return;
-      if(this.movementNode){ try{ this.movementNode.stop(); }catch{} try{ this.movementNode.disconnect(); }catch{} this.movementNode=null; }
-      const src=this.ctx.createBufferSource(); src.buffer=this.buffers.movement; src.loop=true;
-      const dest=this.fxGain||this.master||this.ctx.destination; src.connect(dest); try{ src.start(); }catch{} this.movementNode=src;
-    }
-    stopMovement(){ if(this.movementNode){ try{ this.movementNode.stop(); }catch{} try{ this.movementNode.disconnect(); }catch{} this.movementNode=null; } }
-    startTimerLoop(){
-      if(!this.ctx||!this.buffers.timer) return;
-      if(this.timerNode){ try{ this.timerNode.stop(); }catch{} this.timerNode.disconnect(); this.timerNode=null; }
-      const src=this.ctx.createBufferSource(); src.buffer=this.buffers.timer; src.loop=true;
-      const dest=this.fxGain||this.master||this.ctx.destination; src.connect(dest); try{ src.start(); }catch{} this.timerNode=src;
-    }
-    stopTimerLoop(){ if(this.timerNode){ try{ this.timerNode.stop(); }catch{} this.timerNode.disconnect(); this.timerNode=null; } }
-    tone(freq=440, dur=0.08, type='sine', gain=0.03, attack=0.002, release=0.04){
-      if(!this.canPlay()) return; const t=this.now(); const o=this.ctx.createOscillator(); const g=this.ctx.createGain();
-      o.type=type; o.frequency.value=freq; o.connect(g); g.connect(this.fxGain||this.ctx.destination);
-      const a=attack, r=release; g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gain,t+a); g.gain.setTargetAtTime(0,t+a+dur, r);
-      o.start(t); o.stop(t+a+dur+r*3);
-    }
-    noise(dur=0.25, gain=0.05){
-      if(!this.canPlay()) return; const len=Math.floor((this.ctx.sampleRate||44100)*dur); const buf=this.ctx.createBuffer(1,len,this.ctx.sampleRate);
-      const d=buf.getChannelData(0); for(let i=0;i<len;i++){ d[i]=Math.random()*2-1; }
-      const src=this.ctx.createBufferSource(); src.buffer=buf; const g=this.ctx.createGain(); g.gain.value=gain;
-      src.connect(g); (this.fxGain?g.connect(this.fxGain):g.connect(this.ctx.destination)); const t=this.now(); src.start(t);
-    }
-    step(){ const f=220+Math.random()*120; this.tone(f, 0.03, 'square', 0.015, 0.001, 0.02); }
-    exit(){ this.tone(900,0.06,'sine',0.03); this.tone(1200,0.08,'square',0.02,0.002,0.03); }
-    caught(){ this.noise(0.18,0.07); this.tone(180,0.12,'sawtooth',0.03,0.002,0.05); }
-    alert(){ this.tone(600,0.08,'sine',0.03); setTimeout(()=>this.tone(720,0.08,'sine',0.03), 90); }
-  }
-
-  // ---------- background shader ----------
-  class PsyFractal{
-    constructor(){ this.off=null; this.ctx=null; this.w=0; this.h=0; this.params=null; this.img=null; }
-    randomize(){ this.params={ f1:0.9+Math.random()*2.2, f2:0.9+Math.random()*2.2, f3:0.4+Math.random()*1.3, sp1:0.2+Math.random()*0.6, sp2:0.2+Math.random()*0.6, sp3:0.2+Math.random()*0.6, phaseX:Math.random()*TAU, phaseY:Math.random()*TAU, hueBase:Math.floor(Math.random()*360), hueSwing:90+Math.random()*180 }; }
-    ensureSize(cw,ch){
-      const targetW=Math.max(64, Math.floor(cw/3)), targetH=Math.max(64, Math.floor(ch/3));
-      if(!this.off){ this.off=document.createElement('canvas'); this.ctx=this.off.getContext('2d'); }
-      if(this.w!==targetW || this.h!==targetH){
-        this.w=targetW; this.h=targetH; this.off.width=this.w; this.off.height=this.h; this.img=this.ctx.createImageData(this.w, this.h);
-      }
-      if(!this.params) this.randomize();
-    }
-    drawTo(ctxMain, time){
-      this.ensureSize(canvas.width, canvas.height);
-      const img=this.img, d=img.data, p=this.params, t=time;
-      for(let y=0,i=0;y<this.h;y++){
-        for(let x=0;x<this.w;x++,i+=4){
-          const nx=x/this.w*TAU, ny=y/this.h*TAU;
-          const v=Math.sin(nx*p.f1 + t*p.sp1 + p.phaseX)+Math.sin(ny*p.f2 + t*p.sp2 + p.phaseY)+Math.sin((nx+ny)*p.f3 + t*p.sp3);
-          const vv=(v+3)/6;
-          const hue=(p.hueBase + p.hueSwing*vv + t*20)%360, sat=60+Math.floor(40*vv), val=22+Math.floor(60*vv);
-          const c=(val/100)*(sat/100), h=hue/60, xh=c*(1-Math.abs((h%2)-1));
-          let r=0,g=0,b=0;
-          if(h<1){r=c;g=xh;} else if(h<2){r=xh;g=c;} else if(h<3){g=c;b=xh;} else if(h<4){g=xh;b=c;} else if(h<5){r=xh;b=c;} else {r=c;b=xh;}
-          const m=(val/100)-c;
-          d[i]=Math.floor((r+m)*255); d[i+1]=Math.floor((g+m)*255); d[i+2]=Math.floor((b+m)*255); d[i+3]=150;
-        }
-      }
-      this.ctx.putImageData(img,0,0);
-      ctxMain.save();
-      ctxMain.imageSmoothingEnabled=true; ctxMain.globalAlpha=0.26; ctxMain.globalCompositeOperation='screen';
-      ctxMain.drawImage(this.off, 0, 0, canvas.width, canvas.height);
-      ctxMain.globalCompositeOperation='source-over'; ctxMain.restore();
-    }
-  }
-
-  // ---------- nav grid ----------
-  class MinHeap{ constructor(c){this.c=c;this.a=[];} push(v){const a=this.a; a.push(v); let i=a.length-1; while(i>0){const p=(i-1)>>1; if(this.c(a[i],a[p])<0){[a[i],a[p]]=[a[p],a[i]]; i=p;} else break;}} pop(){const a=this.a; if(a.length===0)return null; const t=a[0]; const v=a.pop(); if(a.length>0){a[0]=v; this.down(0);} return t;} down(i){const a=this.a,n=a.length,c=this.c; while(true){let l=i*2+1,r=l+1,s=i; if(l<n&&c(a[l],a[s])<0)s=l; if(r<n&&c(a[r],a[s])<0)s=r; if(s===i)break; [a[i],a[s]]=[a[s],a[i]]; i=s;}} empty(){return this.a.length===0;} }
-  class Grid{
-    constructor(obstacles,agentRadius){
-      this.cs=GRID_SIZE; this.cols=Math.max(3, Math.floor(W()/this.cs)); this.rows=Math.max(3, Math.floor(H()/this.cs));
-      this.blocked=new Uint8Array(this.cols*this.rows);
-      for(let gy=0;gy<this.rows;gy++) for(let gx=0;gx<this.cols;gx++){
-        const cx=gx*this.cs+this.cs*0.5, cy=gy*this.cs+this.cs*0.5, idx=gy*this.cols+gx;
-        if(gx<=0||gy<=0||gx>=this.cols-1||gy>=this.rows-1){ this.blocked[idx]=1; continue; }
-        let blocked=false; for(const o of obstacles){ if(circleRectCollide(cx,cy,agentRadius+2,o)){blocked=true;break;} } this.blocked[idx]=blocked?1:0;
-      }
-    }
-    inBounds(gx,gy){return gx>=0&&gy>=0&&gx<this.cols&&gy<this.rows;} isBlocked(gx,gy){return this.blocked[gy*this.cols+gx]===1;}
-    cellOf(x,y){return {gx:Math.floor(x/this.cs), gy:Math.floor(y/this.cs)};} toWorld(gx,gy){return {x:gx*this.cs+this.cs*0.5, y:gy*this.cs+this.cs*0.5};}
-    neighbors(gx,gy){ const out=[]; for(let oy=-1;oy<=1;oy++) for(let ox=-1;ox<=1;ox++){ if(!ox&&!oy)continue; const nx=gx+ox, ny=gy+oy; if(!this.inBounds(nx,ny))continue; if(this.isBlocked(nx,ny))continue; if(ox&&oy &&(this.isBlocked(gx+ox,gy)||this.isBlocked(gx,gy+oy))) continue; out.push({gx:nx,gy:ny,w:(ox===0||oy===0)?1:1.41421356}); } return out; }
-    losClear(x1,y1,x2,y2,obstacles){ for(const o of obstacles){ if(lineRectIntersect(x1,y1,x2,y2,o)) return false; } return true; }
-    findPath(x1,y1,x2,y2){
-      const s=this.cellOf(x1,y1), g=this.cellOf(x2,y2); if(!this.inBounds(s.gx,s.gy)||!this.inBounds(g.gx,g.gy))return null; if(this.isBlocked(g.gx,g.gy))return null;
-      if(s.gx===g.gx && s.gy===g.gy){ return [this.toWorld(s.gx,s.gy)]; }
-      const idx=(gx,gy)=>gy*this.cols+gx; const open=new MinHeap((a,b)=>a.f-b.f);
-      const cameX=new Int16Array(this.cols*this.rows).fill(-1), cameY=new Int16Array(this.cols*this.rows).fill(-1);
-      const gScore=new Float32Array(this.cols*this.rows).fill(Infinity), fScore=new Float32Array(this.cols*this.rows).fill(Infinity);
-      const startI=idx(s.gx,s.gy), goalI=idx(g.gx,g.gy); gScore[startI]=0; fScore[startI]=heur(s.gx,s.gy,g.gx,g.gy); open.push({gx:s.gx,gy:s.gy,f:fScore[startI]});
-      const closed=new Uint8Array(this.cols*this.rows); let safety=0; const maxNodes=Math.min(this.cols*this.rows, 2500);
-      while(!open.empty()&&safety++<maxNodes){
-        const cur=open.pop(); const ci=idx(cur.gx,cur.gy); if(closed[ci])continue;
-        if(ci===goalI){
-          const path=[]; let cx=cur.gx, cy=cur.gy;
-          while(!(cx===s.gx&&cy===s.gy)){ path.push(this.toWorld(cx,cy)); const pi=idx(cx,cy); const px=cameX[pi], py=cameY[pi]; if(px<0)break; cx=px; cy=py; }
-          path.push(this.toWorld(s.gx,s.gy)); path.reverse(); return path;
-        }
-        closed[ci]=1;
-        for(const n of this.neighbors(cur.gx,cur.gy)){
-          const ni=idx(n.gx,n.gy); if(closed[ni])continue; const t=gScore[ci]+n.w;
-          if(t<gScore[ni]){ cameX[ni]=cur.gx; cameY[ni]=cur.gy; gScore[ni]=t; fScore[ni]=t+heur(n.gx,n.gy,g.gx,g.gy); open.push({gx:n.gx,gy:n.gy,f:fScore[ni]}); }
-        }
-      }
-      return null;
-      function heur(ax,ay,bx,by){ const dx=Math.abs(ax-bx), dy=Math.abs(ay-by); const dmin=Math.min(dx,dy), dmax=Math.max(dx,dy); return (dmax-dmin)+1.41421356*dmin; }
-    }
-  }
-
-  // ---------- mist ----------
   class ParticleMist{
     constructor(count){
       this.n=count; this.active=count;
@@ -430,82 +314,210 @@
       }
     }
     draw(ctx){
+      if(!game.visualsEnabled) return;
       ctx.save(); ctx.globalAlpha=0.08; ctx.fillStyle='#d0d0d0';
-      const n=this.active; for(let i=0;i<n;i++){ ctx.fillRect(this.px[i]*scale, this.py[i]*scale, 1.1*scale, 1.1*scale); }
+      const n=this.active; for(let i=0;i<n;i++){ ctx.fillRect(this.px[i]*scale, this.py[i]*scale, 1.0*scale, 1.0*scale); }
       ctx.restore();
     }
   }
 
-  // ---------- auto mode base policy ----------
-  function defaultAIPolicy(){
-    return { exitWeight:1.0, botThreatR:220, botRepelK:26000, sidestepK:0.22, stopDur:0.22, stopCd:0.85 };
-  }
-  const AI_STORAGE_KEY='hide_ai_policy_v1', AI_TRIAL_KEY='hide_ai_trial_v1';
-  function safeGet(k){ try{ return localStorage.getItem(k); }catch{ return null; } }
-  function safeSet(k,v){ try{ localStorage.setItem(k,v); }catch{} }
-
-  // ---------- player ----------
-  class Player{
-    constructor(pos){ this.x=pos.x; this.y=pos.y; this.r=PLAYER_RADIUS; this.vx=0; this.vy=0; }
-    update(dt, cfg){
-      const iv=inputVector(); const mag=joystick.active?joystick.mag:((iv[0]||iv[1])?1:0);
-      const dashMul = (game.dashTimer>0)?1.8:1;
-      this.vx += iv[0]*cfg.playerSpeed*dashMul*dt*(0.7+0.3*mag);
-      this.vy += iv[1]*cfg.playerSpeed*dashMul*dt*(0.7+0.3*mag);
-      this.vx *= cfg.playerFriction; this.vy *= cfg.playerFriction;
-      const sp=Math.hypot(this.vx,this.vy), max=cfg.playerMaxSpeed*(dashMul>1?1.5:1); if(sp>max){ const f=max/sp; this.vx*=f; this.vy*=f; }
-      let nx=this.x+this.vx*dt, ny=this.y+this.vy*dt;
-      if(nx<this.r){nx=this.r; this.vx=0;} if(ny<this.r){ny=this.r; this.vy=0;}
-      if(nx>W()-this.r){nx=W()-this.r; this.vx=0;} if(ny>H()-this.r){ny=H()-this.r; this.vy=0;}
-      const obs = game.nearbyObstaclesForCircle(nx,ny,this.r+4);
-      for(const o of obs){
-        if(circleRectCollide(nx,ny,this.r,o)){
-          const tryX=this.x+this.vx*dt; if(!circleRectCollide(tryX,this.y,this.r,o)){ nx=tryX; ny=this.y; this.vy=0; }
-          else{ const tryY=this.y+this.vy*dt; if(!circleRectCollide(this.x,tryY,this.r,o)){ ny=tryY; nx=this.x; this.vx=0; }
-          else{ const dx=this.x-(o.x+o.w*0.5), dy=this.y-(o.y+o.h*0.5); const l=Math.hypot(dx,dy)||1; nx=this.x+dx/l*2; ny=this.y+dy/l*2; this.vx*=0.5; this.vy*=0.5; } }
-        }
+  // ---------- Nav grid and pathfinding worker ----------
+  class Grid{
+    constructor(obstacles,agentRadius){
+      this.cs=GRID_SIZE; this.cols=Math.max(3, Math.floor(W()/this.cs)); this.rows=Math.max(3, Math.floor(H()/this.cs));
+      this.blocked=new Uint8Array(this.cols*this.rows);
+      for(let gy=0;gy<this.rows;gy++) for(let gx=0;gx<this.cols;gx++){
+        const cx=gx*this.cs+this.cs*0.5, cy=gy*this.cs+this.cs*0.5, idx=gy*this.cols+gx;
+        if(gx<=0||gy<=0||gx>=this.cols-1||gy>=this.rows-1){ this.blocked[idx]=1; continue; }
+        let blocked=false; for(const o of obstacles){ if(circleRectCollide(cx,cy,agentRadius+2,o)){blocked=true;break;} } this.blocked[idx]=blocked?1:0;
       }
-      this.x=nx; this.y=ny;
     }
-    draw(ctx){
-      ctx.save(); ctx.shadowColor='#ffffff'; ctx.shadowBlur=12*scale; ctx.fillStyle='#ffffff';
-      ctx.beginPath(); ctx.arc(this.x*scale,this.y*scale,this.r*scale,0,TAU); ctx.fill(); ctx.restore();
+    inBounds(gx,gy){return gx>=0&&gy>=0&&gx<this.cols&&gy<this.rows;}
+    isBlocked(gx,gy){return this.blocked[gy*this.cols+gx]===1;}
+    cellOf(x,y){return {gx:Math.floor(x/this.cs), gy:Math.floor(y/this.cs)};}
+    toWorld(gx,gy){return {x:gx*this.cs+this.cs*0.5, y:gy*this.cs+this.cs*0.5};}
+    neighbors(gx,gy){
+      const out=[]; for(let oy=-1;oy<=1;oy++) for(let ox=-1;ox<=1;ox++){
+        if(!ox&&!oy)continue; const nx=gx+ox, ny=gy+oy; if(!this.inBounds(nx,ny))continue; if(this.isBlocked(nx,ny))continue;
+        if(ox&&oy&&(this.isBlocked(gx+ox,gy)||this.isBlocked(gx,gy+oy))) continue;
+        out.push({gx:nx,gy:ny,w:(ox===0||oy===0)?1:1.41421356});
+      } return out;
+    }
+    losClear(x1,y1,x2,y2,obstacles){ for(const o of obstacles){ if(lineRectIntersect(x1,y1,x2,y2,o)) return false; } return true; }
+  }
+
+  // Pathfinding worker for smooth main thread
+  class PFWorker{
+    constructor(){ this.worker=null; this.ready=false; this.pending=[]; this.capacity=3; }
+    spawn(){
+      if(this.worker) return;
+      const src = `
+        let cols=0, rows=0, cs=16, blocked=null;
+        function idx(gx,gy){ return gy*cols+gx; }
+        function inBounds(gx,gy){ return gx>=0&&gy>=0&&gx<cols&&gy<rows; }
+        function isBlocked(gx,gy){ return blocked[idx(gx,gy)]===1; }
+        function neighbors(gx,gy){
+          const out=[]; for(let oy=-1;oy<=1;oy++) for(let ox=-1;ox<=1;ox++){
+            if(!ox&&!oy)continue; const nx=gx+ox, ny=gy+oy; if(!inBounds(nx,ny))continue; if(isBlocked(nx,ny))continue;
+            if(ox&&oy&&(isBlocked(gx+ox,gy)||isBlocked(gx,gy+oy))) continue;
+            out.push({gx:nx,gy:ny,w:(ox===0||oy===0)?1:1.41421356});
+          } return out;
+        }
+        function heur(ax,ay,bx,by){ const dx=Math.abs(ax-bx), dy=Math.abs(ay-by); const dmin=Math.min(dx,dy), dmax=Math.max(dx,dy); return (dmax-dmin)+1.41421356*dmin; }
+        onmessage = (ev)=>{
+          const m = ev.data;
+          if(m.type==='build'){
+            cols=m.cols; rows=m.rows; cs=m.cs; blocked=new Uint8Array(m.blocked); postMessage({type:'built'}); return;
+          }
+          if(m.type==='path'){
+            const s=m.s, g=m.g; const maxNodes = Math.min(cols*rows, 4500);
+            const open = []; const push=(n)=>{ open.push(n); let i=open.length-1; while(i>0){ const p=(i-1)>>1; if(open[i].f<open[p].f){ [open[i],open[p]]=[open[p],open[i]]; i=p; } else break; } };
+            const pop=()=>{ if(open.length===0) return null; const t=open[0]; const v=open.pop(); if(open.length>0){ open[0]=v; let i=0; for(;;){ let l=i*2+1,r=l+1,s=i; if(l<open.length && open[l].f<open[s].f) s=l; if(r<open.length && open[r].f<open[s].f) s=r; if(s===i) break; [open[i],open[s]]=[open[s],open[i]]; i=s; } } return t; };
+            const cameX=new Int16Array(cols*rows).fill(-1), cameY=new Int16Array(cols*rows).fill(-1);
+            const gScore=new Float32Array(cols*rows); gScore.fill(1e9);
+            const fScore=new Float32Array(cols*rows); fScore.fill(1e9);
+            const startI=idx(s.gx,s.gy), goalI=idx(g.gx,g.gy);
+            if(isBlocked(g.gx,g.gy) || !inBounds(s.gx,s.gy) || !inBounds(g.gx,g.gy)){ postMessage({type:'path', id:m.id, path:null}); return; }
+            gScore[startI]=0; fScore[startI]=heur(s.gx,s.gy,g.gx,g.gy); push({gx:s.gx,gy:s.gy,f:fScore[startI]});
+            const closed=new Uint8Array(cols*rows); let explored=0;
+            while(open.length && explored++<maxNodes){
+              const cur=pop(); const ci=idx(cur.gx,cur.gy); if(closed[ci]) continue;
+              if(ci===goalI){
+                const path=[]; let cx=cur.gx, cy=cur.gy;
+                while(!(cx===s.gx&&cy===s.gy)){ path.push({x:cx*cs+cs*0.5, y:cy*cs+cs*0.5}); const pi=idx(cx,cy); const px=cameX[pi], py=cameY[pi]; if(px<0)break; cx=px; cy=py; }
+                path.push({x:s.gx*cs+cs*0.5, y:s.gy*cs+cs*0.5}); path.reverse();
+                // compress
+                const maxLen=120; const stride = Math.max(1, Math.floor(path.length/maxLen));
+                const out=[]; for(let i=0;i<path.length;i+=stride) out.push(path[i]); if(out[out.length-1].x!==path[path.length-1].x) out.push(path[path.length-1]);
+                postMessage({type:'path', id:m.id, path:out}); return;
+              }
+              closed[ci]=1;
+              const ns=neighbors(cur.gx,cur.gy);
+              for(let k=0;k<ns.length;k++){
+                const n=ns[k]; const ni=idx(n.gx,n.gy); if(closed[ni]) continue;
+                const t=gScore[ci]+n.w; if(t<gScore[ni]){ cameX[ni]=cur.gx; cameY[ni]=cur.gy; gScore[ni]=t; fScore[ni]=t+heur(n.gx,n.gy,g.gx,g.gy); push({gx:n.gx,gy:n.gy,f:fScore[ni]}); }
+              }
+            }
+            postMessage({type:'path', id:m.id, path:null});
+          }
+        };`;
+      const blob = new Blob([src], { type:'application/javascript' });
+      this.worker = new Worker(URL.createObjectURL(blob));
+      this.worker.onmessage = (ev)=>{
+        const m=ev.data;
+        if(m.type==='built'){ this.ready=true; return; }
+        if(m.type==='path'){
+          const task = this.pending.find(t=>t.id===m.id);
+          if(task){ task.bot.path = m.path||[]; task.bot.pathIndex = m.path && m.path.length>1 ? 1 : 0; task.bot.pathTimer=0; }
+          this.pending = this.pending.filter(t=>t.id!==m.id);
+        }
+      };
+    }
+    build(cols,rows,cs,blocked){
+      if(!this.worker) this.spawn();
+      this.ready=false;
+      this.worker.postMessage({type:'build', cols, rows, cs, blocked});
+    }
+    path(bot, sx,sy, tx,ty, grid){
+      if(!this.worker || !this.ready){ // fallback if worker not ready
+        const p = gridFindPathFallback(grid,sx,sy,tx,ty);
+        if(p && p.length>1){ bot.path=p; bot.pathIndex=1; bot.pathTimer=0; }
+        return;
+      }
+      if(this.pending.length >= this.capacity) return;
+      const s=grid.cellOf(sx,sy), g=grid.cellOf(tx,ty);
+      if(!grid.inBounds(s.gx,s.gy)||!grid.inBounds(g.gx,g.gy)) return;
+      const id = (Math.random()*1e9)|0;
+      this.pending.push({id, bot});
+      this.worker.postMessage({type:'path', id, s, g});
+    }
+  }
+
+  // simple fallback on main
+  function gridFindPathFallback(grid,x1,y1,x2,y2){
+    const s=grid.cellOf(x1,y1), g=grid.cellOf(x2,y2);
+    if(!grid.inBounds(s.gx,s.gy)||!grid.inBounds(g.gx,g.gy))return null;
+    if(grid.isBlocked(g.gx,g.gy)) return null;
+    if(s.gx===g.gx && s.gy===g.gy){ return [grid.toWorld(s.gx,s.gy)]; }
+    const idx=(gx,gy)=>gy*grid.cols+gx;
+    const open=[]; const push=(n)=>{ open.push(n); let i=open.length-1; while(i>0){ const p=(i-1)>>1; if(open[i].f<open[p].f){[open[i],open[p]]=[open[p],open[i]]; i=p;} else break; } };
+    const pop=()=>{ if(open.length===0) return null; const t=open[0]; const v=open.pop(); if(open.length>0){ open[0]=v; let i=0; for(;;){ let l=i*2+1,r=l+1,s=i; if(l<open.length && open[l].f<open[s].f) s=l; if(r<open.length && open[r].f<open[s].f) s=r; if(s===i) break; [open[i],open[s]]=[open[s],open[i]]; i=s; } } return t; };
+    const cameX=new Int16Array(grid.cols*grid.rows).fill(-1), cameY=new Int16Array(grid.cols*grid.rows).fill(-1);
+    const gScore=new Float32Array(grid.cols*grid.rows); gScore.fill(1e9);
+    const fScore=new Float32Array(grid.cols*grid.rows); fScore.fill(1e9);
+    function heur(ax,ay,bx,by){ const dx=Math.abs(ax-bx), dy=Math.abs(ay-by); const dmin=Math.min(dx,dy), dmax=Math.max(dx,dy); return (dmax-dmin)+1.41421356*dmin; }
+    const startI=idx(s.gx,s.gy), goalI=idx(g.gx,g.gy); gScore[startI]=0; fScore[startI]=heur(s.gx,s.gy,g.gx,g.gy); push({gx:s.gx,gy:s.gy,f:fScore[startI]});
+    const closed=new Uint8Array(grid.cols*grid.rows); let explored=0, maxNodes=Math.min(grid.cols*grid.rows, 2500);
+    while(open.length && explored++<maxNodes){
+      const cur=pop(); const ci=idx(cur.gx,cur.gy); if(closed[ci]) continue;
+      if(ci===goalI){
+        const path=[]; let cx=cur.gx, cy=cur.gy;
+        while(!(cx===s.gx&&cy===s.gy)){ path.push(grid.toWorld(cx,cy)); const pi=idx(cx,cy); const px=cameX[pi], py=cameY[pi]; if(px<0)break; cx=px; cy=py; }
+        path.push(grid.toWorld(s.gx,s.gy)); path.reverse();
+        const maxLen=120; const stride=Math.max(1, Math.floor(path.length/maxLen));
+        return path.filter((_,i)=> i%stride===0).concat([path[path.length-1]]);
+      }
+      closed[ci]=1;
+      const ns=grid.neighbors(cur.gx,cur.gy);
+      for(const n of ns){
+        const ni=idx(n.gx,n.gy); if(closed[ni]) continue; const t=gScore[ci]+n.w;
+        if(t<gScore[ni]){ cameX[ni]=cur.gx; cameY[ni]=cur.gy; gScore[ni]=t; fScore[ni]=t+heur(n.gx,n.gy,g.gx,g.gy); push({gx:n.gx,gy:n.gy,f:fScore[ni]}); }
+      }
+    }
+    return null;
+  }
+
+  // ---------- powerups ----------
+  class PowerUp{
+    constructor(x,y,type){ this.x=x; this.y=y; this.r=12; this.type=type; this.dead=false; }
+    color(){ switch(this.type){ case 'slow':return'#bbbbbb'; case 'cull':return'#cccccc'; case 'shield':return'#66ff99'; case 'freeze':return'#bbddff'; case 'dash':return'#ffffff'; case 'predator':return'#fffeee'; case 'cloak':return'#88ffaa'; default:return'#ffffff'; } }
+    label(){ switch(this.type){ case 'slow':return'S'; case 'cull':return'X'; case 'shield':return'P'; case 'freeze':return'F'; case 'dash':return'D'; case 'predator':return'R'; case 'cloak':return'C'; default:return'?'; } }
+    draw(ctx, t=0){
+      if(this.dead) return; const x=this.x*scale, y=this.y*scale; const col=this.color();
+      ctx.save(); ctx.shadowColor=col; ctx.shadowBlur=10*scale; ctx.fillStyle=col; ctx.strokeStyle='#000';
+      const pulse=1+0.08*Math.sin(t*6);
+      ctx.beginPath(); ctx.arc(x,y,this.r*scale*pulse,0,TAU); ctx.fill(); ctx.lineWidth=2*scale; ctx.stroke();
+      ctx.fillStyle='#000'; ctx.font=`${12*scale}px system-ui, sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.globalAlpha=0.9; ctx.fillText(this.label(), x, y+0.5);
+      ctx.restore();
     }
   }
 
   // ---------- bots ----------
-  function botColor(kind){
-    return kind==='tele'?'#bb66ff'
-      : kind==='eater'?'#ffaa44'
-      : kind==='cloner'?'#66ffee'
-      : kind==='grower'?'#ff66aa'
-      : kind==='phase'?'#99ff99'
-      : kind==='mimic'?'#ffffff'
-      : kind==='turret'?'#ffbbcc'
-      : kind==='stalker'?'#66aaff'
-      : '#ff2a2a';
-  }
+  const botColor=(k)=> k==='tele'?'#bb66ff'
+    : k==='eater' ? '#ffaa44'
+    : k==='cloner'? '#66ffee'
+    : k==='grower'? '#ff66aa'
+    : k==='phase' ? '#99ff99'
+    : k==='mimic' ? '#ffffff'
+    : k==='turret'? '#ffbbcc'
+    : k==='stalker'?'#66aaff'
+    : '#ff2a2a';
 
   class Bot{
     constructor(pos, kind='hunter'){
       this.x=pos.x; this.y=pos.y; this.r=BOT_RADIUS; this.vx=0; this.vy=0; this.speed=120;
       this.state='patrol'; this.lastSeen=null; this.path=[]; this.pathIndex=0; this.pathTimer=Math.random()*0.15;
       this.patrolPoints=[]; this.currentPatrol=0; this.searchPoints=[]; this.currentSearch=0;
-      this.kind=kind;
-      this.teleTimer = 1.5 + Math.random()*2.0;
-      this.cloneTimer = 3.0 + Math.random()*3.0;
-      this.eatTimer = 0.2;
-      this.growMax = BOT_RADIUS*1.9;
-      this._px=this.x; this._py=this.y; this._stuck=0; this._skipOnce=0; this._pfCooldown=0;
+      this.kind=kind; this._px=this.x; this._py=this.y; this._stuck=0; this._skipOnce=0; this._pfCooldown=0;
     }
-    setDirectPath(grid, tx, ty){ const p=grid.findPath(this.x,this.y,tx,ty); if(p&&p.length>1){ this.path=p; this.pathIndex=1; this.pathTimer=0; } }
+    setDirectPath(tx,ty){ const grid=game.grid; const p=gridFindPathFallback(grid,this.x,this.y,tx,ty); if(p&&p.length>1){ this.path=p; this.pathIndex=1; this.pathTimer=0; } }
     canSee(player, obstacles, cfg){
-      const dx=player.x-this.x, dy=player.y-this.y; if(dx*dx+dy*dy>cfg.botSightRange*cfg.botSightRange) return false;
+      // dynamic detection with noise factor
+      const noise = game.noise || 0.5;
+      const effSight = cfg.botSightRange * (0.9 + noise*0.3);
+      const dx=player.x-this.x, dy=player.y-this.y; if(dx*dx+dy*dy>effSight*effSight) return false;
+      if(!game.grid.losClear(this.x,this.y,player.x,player.y,obstacles)) return false;
       const heading=Math.atan2(this.vy||0.0001,this.vx||0.0001), dir=Math.atan2(dy,dx);
-      let ang=Math.abs(((dir-heading+TAU*1.5)%TAU)-Math.PI); if(ang>cfg.botFOV*0.5) return false;
-      for(const o of obstacles){ if(lineRectIntersect(this.x,this.y,player.x,player.y,o)) return false; } return true;
+      const fov = cfg.botFOV * (1.0 - 0.15*clamp(1-noise,0,1)); // narrower if player is quiet
+      let ang=Math.abs(((dir-heading+TAU*1.5)%TAU)-Math.PI); return ang<=fov*0.5;
     }
-    canHear(player,cfg){ const moving=Math.hypot(player.vx,player.vy); if(moving<10)return false; return dist2(this.x,this.y,player.x,player.y)<=cfg.botHearing*cfg.botHearing; }
+    canHear(player,cfg){
+      const speed = Math.hypot(player.vx,player.vy);
+      const noise = game.noise || 0.5;
+      const effHear = cfg.botHearing * (0.4 + 0.9*noise);
+      return speed>10 && dist2(this.x,this.y,player.x,player.y) <= effHear*effHear;
+    }
     setPatrol(grid){
       const pts=[]; for(let i=0;i<4;i++){ const gx=Math.floor(Math.random()*(grid.cols-4))+2, gy=Math.floor(Math.random()*(grid.rows-4))+2; if(!grid.isBlocked(gx,gy)) pts.push(grid.toWorld(gx,gy)); }
       if(!pts.length) pts.push({x:this.x,y:this.y}); this.patrolPoints=pts; this.currentPatrol=0;
@@ -518,42 +530,38 @@
       this.searchPoints=pts; this.currentSearch=0;
     }
     update(dt, player, obstacles, cfg, grid){
-      if(!(dt>0)) { this.vx=0; this.vy=0; }
       const baseBotSpeed=(cfg.playerMaxSpeed*0.91) * (game.botSpeedMul||1);
       this.speed = baseBotSpeed;
-      const seenNow = (this.kind==='stalker') ? true : this.canSee(player,obstacles,cfg);
-      const heardNow = (this.kind==='stalker') ? false : this.canHear(player,cfg);
+      const seen = (this.kind==='stalker') ? true : this.canSee(player,obstacles,cfg);
+      const heard = (this.kind==='stalker') ? false : this.canHear(player,cfg);
       if(this.kind==='stalker'){ this.speed*=0.6; this.state='chase'; this.lastSeen={x:player.x,y:player.y}; }
-      else { if(seenNow){ this.state='chase'; this.lastSeen={x:player.x,y:player.y}; } else if(this.state!=='chase'&&heardNow){ this.state='search'; this.lastSeen={x:player.x,y:player.y}; } }
+      else { if(seen){ this.state='chase'; this.lastSeen={x:player.x,y:player.y}; } else if(this.state!=='chase'&&heard){ this.state='search'; this.lastSeen={x:player.x,y:player.y}; } }
       this.pathTimer-=dt;
       if(this.state==='chase'){
         if(grid.losClear(this.x,this.y,player.x,player.y,obstacles)){ this.seek(player.x,player.y,dt); }
         else{
-          if(this.pathTimer<=0 && (this._pfCooldown||0)<=0 && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:player.x, ty:player.y}); this._pfCooldown=0.15; this.pathTimer=cfg.botPathRecalc; }
+          if(this.pathTimer<=0 && (this._pfCooldown||0)<=0){ game.pf.path(this, this.x,this.y, player.x,player.y, grid); this._pfCooldown=0.15; this.pathTimer=cfg.botPathRecalc; }
           this.followPath(dt);
         }
-        if(!seenNow && this.lastSeen){ this.state='search'; this.planSearchAround(this.lastSeen,cfg,grid); }
+        if(!seen && this.lastSeen){ this.state='search'; this.planSearchAround(this.lastSeen,cfg,grid); }
       } else if(this.state==='search'){
         if(this.lastSeen){
-          if(this.pathTimer<=0 && (this._pfCooldown||0)<=0 && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:this.lastSeen.x, ty:this.lastSeen.y}); this._pfCooldown=0.15; this.pathTimer=cfg.botPathRecalc*1.1; }
+          if(this.pathTimer<=0 && (this._pfCooldown||0)<=0){ game.pf.path(this, this.x,this.y, this.lastSeen.x,this.lastSeen.y, grid); this._pfCooldown=0.15; this.pathTimer=cfg.botPathRecalc*1.05; }
           if(Math.hypot(this.x-this.lastSeen.x,this.y-this.lastSeen.y)<18){
             if(!this.searchPoints.length) this.planSearchAround(this.lastSeen,cfg,grid);
             const target=this.searchPoints[this.currentSearch%Math.max(1,this.searchPoints.length)];
-            if(this.pathTimer<=0 && (this._pfCooldown||0)<=0 && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:target.x, ty:target.y}); this._pfCooldown=0.15; this.pathTimer=cfg.botPathRecalc*1.2; this.currentSearch++; if(this.currentSearch>this.searchPoints.length*2){ this.state='patrol'; } }
+            if(this.pathTimer<=0 && (this._pfCooldown||0)<=0){ game.pf.path(this, this.x,this.y, target.x, target.y, grid); this._pfCooldown=0.15; this.pathTimer=cfg.botPathRecalc*1.15; this.currentSearch++; if(this.currentSearch>this.searchPoints.length*2){ this.state='patrol'; } }
           }
           this.followPath(dt);
         } else this.state='patrol';
       } else {
         if(!this.patrolPoints.length) this.setPatrol(grid);
         const t=this.patrolPoints[this.currentPatrol%this.patrolPoints.length];
-        if(this.pathTimer<=0 && (this._pfCooldown||0)<=0 && game.pfQueue.length<10){ game.pfQueue.push({bot:this, sx:this.x, sy:this.y, tx:t.x, ty:t.y}); this._pfCooldown=0.15; this.pathTimer=cfg.botPathRecalc*1.3; }
+        if(this.pathTimer<=0 && (this._pfCooldown||0)<=0){ game.pf.path(this, this.x,this.y, t.x, t.y, grid); this._pfCooldown=0.15; this.pathTimer=cfg.botPathRecalc*1.3; }
         this.followPath(dt);
         if(Math.hypot(this.x-t.x,this.y-t.y)<18) this.currentPatrol++;
       }
-      // stuck handling
-      const moved=Math.hypot(this.x-this._px,this.y-this._py);
-      this._px=this.x; this._py=this.y;
-      if(moved<0.5) this._stuck+=dt; else this._stuck=0;
+      const moved=Math.hypot(this.x-this._px,this.y-this._py); this._px=this.x; this._py=this.y; if(moved<0.5) this._stuck+=dt; else this._stuck=0;
       if(this._stuck>0.35){ this.path=[]; this.pathIndex=0; this.pathTimer=(this.pathTimer||0)+0.25; }
     }
     followPath(dt){
@@ -575,11 +583,10 @@
     seek(tx,ty,dt){ const dx=tx-this.x, dy=ty-this.y, d=Math.hypot(dx,dy)||1, n=[dx/d,dy/d]; this.vx=n[0]*this.speed; this.vy=n[1]*this.speed; this.x+=this.vx*dt; this.y+=this.vy*dt; }
     draw(ctx){
       const x=this.x*scale, y=this.y*scale, r=this.r*scale;
-      ctx.save();
-      let color=botColor(this.kind), shadow=color;
+      ctx.save(); let color=botColor(this.kind);
       const moving=Math.hypot(game.player.vx, game.player.vy)>5;
       if(this.kind==='phase' && moving){ ctx.globalAlpha=0.12; }
-      ctx.shadowColor=shadow; ctx.shadowBlur=14*scale; ctx.fillStyle=color;
+      ctx.shadowColor=color; ctx.shadowBlur=14*scale; ctx.fillStyle=color;
       ctx.beginPath();
       for(let i=0;i<6;i++){ const a=(Math.PI/3)*i+Math.PI/6; const px=x+Math.cos(a)*r, py=y+Math.sin(a)*r; if(i===0)ctx.moveTo(px,py); else ctx.lineTo(px,py); }
       ctx.closePath(); ctx.fill(); ctx.restore();
@@ -626,74 +633,137 @@
 
   // ---------- UI helpers ----------
   function randomFreePoint(obstacles,radius){
-    for(let i=0;i<2000;i++){ const x=radius+8+Math.random()*(W()-2*radius-16), y=radius+8+Math.random()*(H()-2*radius-16);
-      let coll=false; for(const o of obstacles){ if(circleRectCollide(x,y,radius+3,o)){ coll=true; break; } } if(!coll) return {x,y}; }
+    for(let i=0;i<1800;i++){
+      const x=radius+8+Math.random()*(W()-2*radius-16), y=radius+8+Math.random()*(H()-2*radius-16);
+      let coll=false; for(const o of obstacles){ if(circleRectCollide(x,y,radius+3,o)){ coll=true; break; } } if(!coll) return {x,y};
+    }
     return {x:radius+16,y:radius+16};
+  }
+
+  // ---------- minimap ----------
+  class Minimap{
+    constructor(canvas){ this.el=canvas; this.ctx=canvas.getContext('2d'); this.on=true; }
+    draw(game){
+      if(!game.minimapOn) return;
+      const mm=this.ctx, w=this.el.width, h=this.el.height;
+      mm.clearRect(0,0,w,h);
+      mm.fillStyle='rgba(255,255,255,0.06)'; mm.fillRect(0,0,w,h);
+      const sx = w / W(), sy = h / H();
+      // obstacles
+      mm.save(); mm.fillStyle='rgba(255,255,255,0.18)';
+      for(const o of game.obstacles){ mm.fillRect(o.x*sx, o.y*sy, o.w*sx, o.h*sy); }
+      mm.restore();
+      // exit
+      mm.save(); mm.strokeStyle='#ffffff'; mm.globalAlpha=0.9; mm.lineWidth=1;
+      const ex=game.exitRect; mm.strokeRect(ex.x*sx, ex.y*sy, ex.w*sx, ex.h*sy);
+      mm.restore();
+      // powerups
+      mm.save(); for(const pu of game.powerUps){ mm.fillStyle=pu.color(); mm.globalAlpha=0.9; mm.fillRect(pu.x*sx-2, pu.y*sy-2, 4,4); } mm.restore();
+      // bots
+      for(const b of game.bots){ mm.fillStyle=botColor(b.kind); mm.globalAlpha=0.85; mm.fillRect(b.x*sx-2, b.y*sy-2, 4,4); }
+      // player
+      mm.fillStyle='#ffffff'; mm.globalAlpha=1; mm.fillRect(game.player.x*sx-2, game.player.y*sy-2, 4,4);
+    }
   }
 
   // ---------- the game ----------
   const game = {
-    level: 1, debug:false, running:false, autoMode:false, screen:'menu', overlayActive:false, visualsEnabled:true,
+    // state
+    level:1, running:false, screen:'menu', overlayActive:false, visualsEnabled:true, debug:false, autoMode:false,
+    minimap:new Minimap(minimapEl), minimapOn:true,
     time:0, cfg:null, player:null, bots:[], obstacles:[], grid:null, powerUps:[], effects:[],
     trails:{ player:new Trail('#ffffff', 600), bots:[] },
-    bg:{ x:0, y:0 }, audio:new Sfx(), fractal:new PsyFractal(), mist:new ParticleMist(PARTICLE_COUNT), pfQueue:[],
-    prevBotStates:new Map(), codeRain:new CodeRain(),
-    // spatial index
+    audio:new Sfx(), fractal:new PsyFractal(), mist:new ParticleMist(PARTICLE_COUNT),
+    pf:new PFWorker(), pfQueue:[], prevBotStates:new Map(),
     obsIndex:null, _obsQueryId:1,
-    // AI learn
-    aiBest:null, aiPolicy:null, aiPolicyCurrent:null, aiExplorationEps:0.25, aiNoiseScale:0.18,
-    // micro-planner cache
-    aiPlanDir:[0,0], aiPlanNextT:0,
+    botSpeedMul:1, slowTimer:0, slowTotal:4.0, freezeTimer:0, freezeTotal:2.5, dashTimer:0, dashTotal:2.2,
+    predator:false, predatorTimer:0, predatorTotal:4.0, cloak:false, cloakTimer:0, cloakTotal:3.5,
+    noise:0.5, sneakActive:false, autoSneak:false, anyTimerActivePrev:false,
+    seed: (Date.now()>>>8)&0xffffffff,
 
     togglePause(){
       if(this.overlayActive){ overlay.style.display='none'; this.overlayActive=false; return; }
-      this.overlayActive=true;
-      overlay.style.display='flex';
-      overlayText.innerHTML = `<div class="panel"><b>Paused</b><div style="opacity:.8; margin-top:6px">Z Auto • R Restart • M Debug • N Mute • G Visuals • P Resume</div></div>`;
+      this.overlayActive=true; overlay.style.display='flex';
+      overlayText.innerHTML = `<div class="panel">
+        <div style="font-size:22px; margin-bottom:10px">Paused</div>
+        <div style="opacity:.85; margin-bottom:10px">Z Auto • Shift Sneak • V Minimap • O Settings • R Restart • M Debug • N Mute • G Visuals</div>
+        <div><button id="btnResume">Resume</button></div>
+      </div>`;
+      setTimeout(()=> document.getElementById('btnResume')?.addEventListener('click',()=>this.togglePause()),0);
     },
 
-    getScores(){ try{ const s=safeGet('hide_highscores'); return s?JSON.parse(s):[]; }catch{ return []; } },
-    saveScores(arr){ try{ safeSet('hide_highscores', JSON.stringify(arr)); }catch{} },
+    getScores(){ try{ const s=localStorage.getItem('hide_highscores'); return s?JSON.parse(s):[]; }catch{ return []; } },
+    saveScores(arr){ try{ localStorage.setItem('hide_highscores', JSON.stringify(arr)); }catch{} },
     qualifies(score){ const arr=this.getScores(); if(arr.length<5) return true; return score>Math.min(...arr.map(x=>x.score)); },
     addScore(name, score){ const arr=this.getScores(); arr.push({ name:String(name||'---').slice(0,12), score:score|0 }); arr.sort((a,b)=>b.score-a.score); if(arr.length>5) arr.length=5; this.saveScores(arr); },
 
     showHome(){
-      this.screen='menu'; this.running=false; this.overlayActive=true;
-      overlay.style.display='flex';
-      overlayText.innerHTML = `<div style="min-width:280px">
-        <div style="font-size:24px; letter-spacing:.5px; margin-bottom:14px">Matrix Hide and Seek</div>
-        <div style="display:flex; flex-direction:column; gap:10px; align-items:stretch">
-          <button id="btnStart" style="padding:10px 14px; font-size:16px">New Run</button>
-          <button id="btnScores" style="padding:10px 14px; font-size:16px">Highscores</button>
+      this.screen='menu'; this.running=false; this.overlayActive=true; overlay.style.display='flex';
+      overlayText.innerHTML = `<div class="panel" style="min-width:280px">
+        <div style="font-size:24px; letter-spacing:.5px; margin-bottom:14px">Matrix Hide and Seek v2</div>
+        <div class="col">
+          <button id="btnStart" style="font-size:16px">New Run</button>
+          <button id="btnDaily" style="font-size:16px">Daily Seed</button>
+          <button id="btnScores" style="font-size:16px">Highscores</button>
+          <button id="btnSettings" style="font-size:16px">Settings</button>
         </div>
-        <div style="opacity:.75; margin-top:12px">WASD or drag • Z Auto • R Restart • N Mute • M Debug</div>
+        <div style="opacity:.75; margin-top:12px">WASD or drag • Shift Sneak • Z Auto • V Minimap • R Restart</div>
       </div>`;
       setTimeout(()=>{
         document.getElementById('btnStart')?.addEventListener('click', ()=> this.startNewRun());
+        document.getElementById('btnDaily')?.addEventListener('click', ()=> this.startDaily());
         document.getElementById('btnScores')?.addEventListener('click', ()=> this.showHighscores());
+        document.getElementById('btnSettings')?.addEventListener('click', ()=> this.showSettings());
       },0);
+    },
+    startDaily(){
+      const d=new Date(); const key = Number(`${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}`);
+      this.seed = key; this.startNewRun();
     },
     showHighscores(){
       this.screen='highscores'; this.running=false; this.overlayActive=true;
       const arr=this.getScores();
       const rows=arr.length?arr.map((r,i)=>`<div style='display:flex; justify-content:space-between'><span>${i+1}. ${r.name}</span><span>Score ${r.score}</span></div>`).join(''):"<div style='opacity:.8'>No highscores yet.</div>";
       overlay.style.display='flex';
-      overlayText.innerHTML = `<div style="min-width:260px">
+      overlayText.innerHTML = `<div class="panel" style="min-width:260px">
         <div style="font-size:22px; margin-bottom:10px">Highscores</div>
         <div style="display:flex; flex-direction:column; gap:6px; text-align:left; margin-bottom:14px">${rows}</div>
-        <button id='btnBack' style='padding:8px 12px; font-size:15px'>Back</button>
+        <button id='btnBack' style='font-size:15px'>Back</button>
       </div>`;
       setTimeout(()=> document.getElementById('btnBack')?.addEventListener('click', ()=> this.showHome()), 0);
     },
+    showSettings(){
+      this.screen='settings'; this.running=false; this.overlayActive=true;
+      overlay.style.display='flex';
+      overlayText.innerHTML = `<div class="panel" style="min-width:280px">
+        <div style="font-size:22px; margin-bottom:10px">Settings</div>
+        <div class="col" style="text-align:left">
+          <label class="switch"><span>Visuals</span><input id="setVisuals" type="checkbox" ${this.visualsEnabled?'checked':''}></label>
+          <label class="switch"><span>Minimap</span><input id="setMM" type="checkbox" ${this.minimapOn?'checked':''}></label>
+          <label class="switch"><span>Auto Mode</span><input id="setAuto" type="checkbox" ${this.autoMode?'checked':''}></label>
+          <label class="switch"><span>Audio</span><input id="setAudio" type="checkbox" ${!this.audio.muted?'checked':''}></label>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button id="btnClose" style="flex:1">Close</button>
+        </div>
+      </div>`;
+      setTimeout(()=>{
+        document.getElementById('setVisuals')?.addEventListener('change', e=> this.visualsEnabled = e.target.checked);
+        document.getElementById('setMM')?.addEventListener('change', e=>{ this.minimapOn = e.target.checked; minimapEl.style.display = this.minimapOn?'block':'none'; });
+        document.getElementById('setAuto')?.addEventListener('change', e=> this.autoMode = e.target.checked);
+        document.getElementById('setAudio')?.addEventListener('change', e=> this.audio.toggleMute());
+        document.getElementById('btnClose')?.addEventListener('click', ()=>{ overlay.style.display='none'; this.overlayActive=false; });
+      },0);
+    },
     promptHighscore(score){
       this.screen='menu'; this.running=false; this.overlayActive=true; overlay.style.display='flex';
-      overlayText.innerHTML = `<div style='min-width:260px'>
+      overlayText.innerHTML = `<div class="panel" style='min-width:260px'>
         <div style='font-size:18px; margin-bottom:8px'>Top 5! Enter name</div>
         <div style='opacity:.85; margin-bottom:8px'>Score ${score}</div>
         <input id='nameInput' maxlength='12' placeholder='Your name' style='width:100%; padding:8px; font-size:16px; margin-bottom:10px;'/>
-        <div style='display:flex; gap:8px'>
-          <button id='btnSave' style='flex:1; padding:8px 12px; font-size:15px'>Save</button>
-          <button id='btnSkip' style='padding:8px 12px; font-size:15px'>Skip</button>
+        <div class="row">
+          <button id='btnSave' style='flex:1'>Save</button>
+          <button id='btnSkip'>Skip</button>
         </div>
       </div>`;
       setTimeout(()=>{
@@ -701,39 +771,6 @@
         document.getElementById('btnSave')?.addEventListener('click', ()=>{ const name=inp && 'value' in inp ? inp.value: ''; this.addScore(name, score); this.showHighscores(); });
         document.getElementById('btnSkip')?.addEventListener('click', ()=> this.showHome());
       },0);
-    },
-
-    aiLoad(){
-      const raw=safeGet(AI_STORAGE_KEY);
-      if(raw){ try{ this.aiBest=JSON.parse(raw); }catch{ this.aiBest=null; } }
-      if(!this.aiBest || !this.aiBest.policy){ this.aiBest={ policy:defaultAIPolicy(), bestScore:0 }; }
-      this.aiPolicy=this.aiBest.policy;
-    },
-    aiSaveBest(){ try{ safeSet(AI_STORAGE_KEY, JSON.stringify(this.aiBest)); }catch{} },
-    aiSampleCandidate(){
-      const base=this.aiPolicy || defaultAIPolicy(); const rnd=Math.random(); const explore = rnd < this.aiExplorationEps;
-      const noise=(s)=> (1 + (Math.random()*2-1)*this.aiNoiseScale*s); const c=Object.assign({}, base);
-      if(explore){
-        c.exitWeight = clampNum(c.exitWeight * noise(1), 0.6, 1.6);
-        c.botThreatR = Math.round(clampNum(c.botThreatR * noise(1), 160, 320));
-        c.botRepelK  = Math.round(clampNum(c.botRepelK  * noise(1), 15000, 45000));
-        c.sidestepK  = clampNum(c.sidestepK * noise(1), 0.05, 0.6);
-        c.stopDur    = clampNum(c.stopDur   * noise(1), 0.06, 0.6);
-        c.stopCd     = clampNum(c.stopCd    * noise(1), 0.4,  2.2);
-      }
-      return c;
-    },
-    aiBeginRun(){
-      if(!this.aiPolicy) this.aiLoad();
-      const cand=this.aiSampleCandidate();
-      this.aiPolicyCurrent=cand;
-      try{ safeSet(AI_TRIAL_KEY, JSON.stringify({ policy:cand, t:Date.now() })); }catch{}
-    },
-    aiEndRun(score){
-      if(!this.aiPolicy) this.aiLoad();
-      const best=(this.aiBest && typeof this.aiBest.bestScore==='number')?this.aiBest.bestScore:0;
-      if(score>best){ this.aiBest={ policy:this.aiPolicyCurrent||this.aiPolicy||defaultAIPolicy(), bestScore:score }; this.aiSaveBest(); }
-      try{ const prev=safeGet(AI_TRIAL_KEY); if(prev){ const obj=JSON.parse(prev); obj.score=score; safeSet(AI_TRIAL_KEY, JSON.stringify(obj)); } }catch{}
     },
 
     // obstacle index
@@ -768,15 +805,25 @@
       return out.length?out:this.obstacles;
     },
 
+    buildWorkerGrid(){
+      if(!this.grid) return;
+      this.pf.spawn();
+      this.pf.build(this.grid.cols, this.grid.rows, this.grid.cs, this.grid.blocked);
+    },
+
     // builder
     buildLevel(level){
+      const rand = rndSeeded(this.seed);
       this.time=0; this.cfg=genLevelConfig(level);
       this.effects=[]; this.trails={ player:new Trail('#ffffff', 600), bots:[] }; this.powerUps=[];
       this.autoStopUntil=0; this.autoStopCooldown=0;
-      this.powerUpBag = this.powerUpBag || [];
-      this.pfQueue=[]; this.prevBotStates=new Map(); this.bg={ x:W()*0.5, y:H()*0.5 };
-
+      this.pfQueue=[]; this.prevBotStates=new Map();
       this.obstacles = makeObstacles(this.cfg.obstacleCount);
+      // occasional teleporting block
+      if(level>=3 && Math.random()<0.5){
+        const big = this.obstacles[(Math.random()*this.obstacles.length)|0];
+        if(big){ big.type='tele'; big.timer=1.2+rand()*2.0; }
+      }
       this.rebuildObstacleIndex();
 
       const p0 = randomFreePoint(this.obstacles, PLAYER_RADIUS);
@@ -813,19 +860,21 @@
         const b=new Bot(pos,k); this.bots.push(b); this.trails.bots.push(new Trail(botColor(b.kind), 300));
       }
 
-      const maxBotR=Math.max(BOT_RADIUS, ...this.bots.map(bb=> (bb.kind==='grower'? bb.growMax : BOT_RADIUS)));
+      const maxBotR=Math.max(BOT_RADIUS, ...this.bots.map(bb=> bb.r));
       this.grid=new Grid(this.obstacles, maxBotR);
+      this.buildWorkerGrid();
 
+      // powerups bag
       const ensureBag=()=>{
         if(!this.powerUpBag || this.powerUpBag.length===0){
-          this.powerUpBag=['slow','freeze','shield','dash','cull','predator'];
+          this.powerUpBag=['slow','freeze','shield','dash','cull','predator','cloak'];
           for(let i=this.powerUpBag.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [this.powerUpBag[i],this.powerUpBag[j]]=[this.powerUpBag[j],this.powerUpBag[i]]; }
         }
       };
       for(let k=0;k<2;k++){
         const pos=randomFreePoint(this.obstacles,14);
-        if(dist2(pos.x,pos.y,this.player.x,this.player.y) < (SAFE_PU+PLAYER_RADIUS+12)**2){ k--; continue; }
-        let nearBot=false; for(const bp of this.bots){ if(dist2(pos.x,pos.y,bp.x,bp.y) < (SAFE_PU+BOT_RADIUS+12)**2){ nearBot=true; break; } }
+        if(dist2(pos.x,pos.y,this.player.x,this.player.y) < (48+PLAYER_RADIUS+12)**2){ k--; continue; }
+        let nearBot=false; for(const bp of this.bots){ if(dist2(pos.x,pos.y,bp.x,bp.y) < (48+BOT_RADIUS+12)**2){ nearBot=true; break; } }
         if(nearBot){ k--; continue; }
         if(circleRectCollide(pos.x,pos.y,14,this.exitRect)) { k--; continue; }
         ensureBag();
@@ -833,42 +882,37 @@
         this.powerUps.push(new PowerUp(pos.x, pos.y, type));
       }
 
-      this.botSpeedMul=1; this.slowTimer=0; this.slowTotal=4.0; this.freezeTimer=0; this.freezeTotal=2.5; this.dashTimer=0; this.dashTotal=2.2;
-      this.predator=false; this.predatorTimer=0; this.predatorTotal=4.0;
-      this.running=true;
-      this.aiWp=null; this.aiWpTimer=0; this._aiPrevX=this.player.x; this._aiPrevY=this.player.y; this._aiStill=0; this._aiTprev=this.time||0;
-      this.shakeT=0;
-      this.codeRain.setSize();
+      this.botSpeedMul=1; this.slowTimer=0; this.freezeTimer=0; this.dashTimer=0;
+      this.predator=false; this.predatorTimer=0; this.cloak=false; this.cloakTimer=0;
+      this.running=true; this.shakeT=0;
+      this.codeRain = new CodeRain(); this.codeRain.setSize();
+      this.audio.init();
     },
 
     resetLevel(){ this.buildLevel(this.level); },
     nextLevel(){ this.level++; this.buildLevel(this.level); this.showMessage("Matrix "+this.level+" loaded."); this.shake(0.18); },
 
-    showMessage(text, onClose=null){
+    showMessage(text){
       this.overlayActive=true; overlay.style.display='flex';
-      overlayText.innerHTML=text+'<div style="margin-top:8px; opacity:.75">Tap or key to continue</div>';
+      overlayText.innerHTML = `<div class="panel">${text}<div style="margin-top:8px; opacity:.75">Tap or key to continue</div></div>`;
       const hide=()=>{ overlay.style.display='none'; window.removeEventListener('keydown', hideOnce, true); window.removeEventListener('pointerdown', hideOnce, true); };
-      const hideOnce=()=>{ this.audio.init(); hide(); this.overlayActive=false; if(typeof onClose==='function'){ onClose(); } };
-      window.addEventListener('keydown', hideOnce, true); window.addEventListener('pointerdown', hideOnce, true); setTimeout(hide, 2200);
+      const hideOnce=()=>{ hide(); this.overlayActive=false; };
+      window.addEventListener('keydown', hideOnce, true); window.addEventListener('pointerdown', hideOnce, true);
+      setTimeout(hide, 2000);
     },
 
     onFps(fps){
-      // particles
-      if(fps<48) this.mist.setActive(2200); else if(fps<54) this.mist.setActive(3000); else this.mist.setActive(PARTICLE_COUNT);
-      // adaptive render scale with hysteresis
+      if(fps<48) this.mist.setActive(2200); else if(fps<54) this.mist.setActive(2800); else this.mist.setActive(PARTICLE_COUNT);
       if(fps<42) setRenderScale(0.75);
       else if(fps<48) setRenderScale(0.85);
       else if(fps>58) setRenderScale(1.0);
-      // code rain visibility
-      this.codeRain.enabled = this.visualsEnabled && fps>=45;
     },
 
     startNewRun(){
       this.overlayActive=false; overlay.style.display='none';
       this.screen='play';
-      this.runs = Number(safeGet('hide_runs')||0) + 1; safeSet('hide_runs', String(this.runs));
+      const runs = Number(localStorage.getItem('hide_runs')||0) + 1; localStorage.setItem('hide_runs', String(runs));
       this.level=1; this.buildLevel(this.level);
-      this.aiBeginRun();
       this.running=true;
     },
 
@@ -888,13 +932,10 @@
           for(const other of this.obstacles){ if(other===o) continue; if(!(cand.x+cand.w<=other.x || other.x+other.w<=cand.x || cand.y+cand.h<=other.y || other.y+other.h<=cand.y)){ overlaps=true; break; } }
           if(overlaps){ o.dir*=-1; } else { o.offset=clampedOff; if(o.axis==='x') o.x=nx; else o.y=ny; }
         } else if(o.type==='tele'){
-          const tick = moved ? 1.0 : 0.5;
-          o.timer = (o.timer ?? (1.5+Math.random()*2.5)) - dt*tick;
-          if(o.shake>0){ o.shake-=dt; if(o.shake<0) o.shake=0; }
-          if(o.timer<=0 && o.shake===0){ o.shake=0.9+Math.random()*0.6; o.timer=-1; }
-          else if(o.timer<0 && o.shake===0){
+          o.timer = (o.timer ?? 1.5) - dt*(moved?1.0:0.5);
+          if(o.timer<=0){ // teleport to a valid new cell
             const cs=GRID_SIZE; let found=null;
-            for(let tries=0; tries<600; tries++){
+            for(let tries=0; tries<500; tries++){
               const cw=Math.max(1, Math.round(o.w/cs)), ch=Math.max(1, Math.round(o.h/cs));
               const gx=2+Math.floor(Math.random()*(Math.floor(W()/cs)-cw-4)), gy=2+Math.floor(Math.random()*(Math.floor(H()/cs)-ch-4));
               const nx=gx*cs, ny=gy*cs; const cand={x:nx,y:ny,w:o.w,h:o.h};
@@ -908,67 +949,11 @@
               if(!coll){ found=cand; break; }
             }
             if(found){ o.x=found.x; o.y=found.y; teleported=true; }
-            o.timer = 1.5 + Math.random()*2.5;
+            o.timer = 1.5 + Math.random()*2.0;
           }
         }
       }
-      if(teleported){ const maxR=Math.max(BOT_RADIUS, ...this.bots.map(bb=> (bb.kind==='grower'? bb.growMax : BOT_RADIUS))); this.grid=new Grid(this.obstacles, maxR); this.rebuildObstacleIndex(); this.pfQueue.length=0; for(const bb of this.bots){ bb.path=[]; bb.pathIndex=0; } }
-    },
-
-    carveAt(cx, cy, size=GRID_SIZE){
-      for(let i=0;i<this.obstacles.length;i++){
-        const o=this.obstacles[i];
-        if(cx>=o.x && cx<=o.x+o.w && cy>=o.y && cy<=o.y+o.h){
-          const MIN = GRID_SIZE*1.0; let made=false; const slit = Math.max(GRID_SIZE*0.9, size); const newObs=[];
-          if(o.w >= o.h){
-            const leftW = (cx - o.x) - slit*0.5, rightW = (o.x+o.w - cx) - slit*0.5;
-            if(leftW > MIN){ newObs.push({x:o.x, y:o.y, w:leftW, h:o.h, type:o.type}); }
-            if(rightW > MIN){ newObs.push({x:cx+slit*0.5, y:o.y, w:rightW, h:o.h, type:o.type}); }
-            made = newObs.length>0;
-          } else {
-            const topH = (cy - o.y) - slit*0.5, botH = (o.y+o.h - cy) - slit*0.5;
-            if(topH > MIN){ newObs.push({x:o.x, y:o.y, w:o.w, h:topH, type:o.type}); }
-            if(botH > MIN){ newObs.push({x:o.x, y:cy+slit*0.5, w:o.w, h:botH, type:o.type}); }
-            made = newObs.length>0;
-          }
-          if(made){
-            this.obstacles.splice(i,1, ...newObs);
-            this.rebuildObstacleIndex();
-            return true;
-          }
-          return false;
-        }
-      }
-      return false;
-    },
-
-    planAmbush(triggerBot){
-      if(!this.grid || this.bots.length<2) return;
-      if(this.time - (this.lastAmbushTime||-99) < 4.0) return;
-      this.lastAmbushTime=this.time;
-      const px=this.player.x, py=this.player.y, pvx=this.player.vx, pvy=this.player.vy; const sp=Math.hypot(pvx,pvy);
-      const nx = sp>1 ? pvx/sp : 1, ny = sp>1 ? pvy/sp : 0;
-      const R=120; const offsets = sp>1 ? [ [nx,ny], [ -ny, nx ], [ ny, -nx ] ] : [ [1,0], [0,1], [-1,0] ];
-      const candidates=this.bots.filter(b=>b!==triggerBot).slice(0,2);
-      let assigned=0;
-      for(const b of candidates){
-        const off = offsets[Math.min(assigned, offsets.length-1)]; assigned++;
-        let tx = px + off[0]*R, ty = py + off[1]*R;
-        const cell=this.grid.cellOf(tx,ty);
-        let best=this.grid.inBounds(cell.gx,cell.gy)&&!this.grid.isBlocked(cell.gx,cell.gy)? {gx:cell.gx, gy:cell.gy}: null;
-        if(!best){
-          const maxR=6; outer: for(let r=1;r<=maxR;r++){
-            for(let dy=-r; dy<=r; dy++) for(let dx=-r; dx<=r; dx++){
-              const gx=cell.gx+dx, gy=cell.gy+dy; if(!this.grid.inBounds(gx,gy)) continue; if(this.grid.isBlocked(gx,gy)) continue; best={gx,gy}; break outer;
-            }
-          }
-        }
-        if(best){
-          const wp=this.grid.toWorld(best.gx,best.gy);
-          if(this.pfQueue.length<6){ this.pfQueue.push({bot:b, sx:b.x, sy:b.y, tx:wp.x, ty:wp.y}); }
-        }
-      }
-      this.effects.push(new Burst(px, py, '#ff8a8a', 140));
+      if(teleported){ const maxR=Math.max(BOT_RADIUS, ...this.bots.map(bb=> bb.r)); this.grid=new Grid(this.obstacles, maxR); this.rebuildObstacleIndex(); this.buildWorkerGrid(); for(const bb of this.bots){ bb.path=[]; bb.pathIndex=0; } }
     },
 
     // camera shake
@@ -976,54 +961,51 @@
 
     update(dt){
       this.time+=dt; hudLevel.textContent='Matrix '+this.level;
-      if(this.overlayActive){ this.audio.stopMovement?.(); this.wasMoving=false; return; }
+      if(this.overlayActive){ this.audio.stopTimer(); return; }
 
-      // pathfinding workers
-      for(let i=0;i<2 && this.pfQueue && this.pfQueue.length;i++){
-        const task=this.pfQueue.shift();
-        if(this.grid){
-          let p=this.grid.findPath(task.sx,task.sy,task.tx,task.ty);
-          if(p && p.length>80){ const stride=Math.ceil(p.length/80); p=p.filter((_,idx)=> idx%stride===0); if(p[p.length-1].x!==task.tx||p[p.length-1].y!==task.ty) p.push({x:task.tx,y:task.ty}); }
-          if(p&&p.length>1){ task.bot.path=p; task.bot.pathIndex=1; task.bot.pathTimer=0; }
-          task.bot.state='chase'; task.bot.lastSeen={x:task.tx,y:task.ty};
-        }
-      }
-
-      // player
+      // player input and movement
       const ivNow = inputVector();
       const inputActive = !!(ivNow[0] || ivNow[1]);
       this.player.update(dt,this.cfg);
       const playerSp=Math.hypot(this.player.vx,this.player.vy);
-      const moveFactor = inputActive ? 1 : 0;
 
-      // audio move loop
-      const isMovingNow = inputActive && playerSp>20;
-      if(isMovingNow && !this.wasMoving && this.audio && this.audio.loaded){ this.audio.playMovement(); }
-      if((!isMovingNow || !this.running) && this.wasMoving && this.audio){ this.audio.stopMovement(); }
-      this.wasMoving = isMovingNow;
+      // dynamic noise/stealth calculation
+      const nearObs = this.nearbyObstaclesForCircle(this.player.x, this.player.y, 72);
+      let cover=0; for(const o of nearObs){ if(circleRectCollide(this.player.x,this.player.y,40,o)) { cover+=0.5; } }
+      cover = clamp(cover,0,1);
+      const baseNoise = clamp(playerSp / (this.cfg.playerMaxSpeed||1), 0, 1);
+      const sneakMod = (this.sneakActive || this.autoSneak) ? 0.55 : 1.0;
+      this.noise = clamp(baseNoise*0.9*sneakMod - 0.35*cover, 0.08, 1.0);
+      stealthFill.style.width = Math.round(this.noise*100)+'%';
+
+      // auto sneak logic
+      if(this.autoMode){
+        let minD=9999; for(const b of this.bots){ const d=Math.hypot(b.x-this.player.x, b.y-this.player.y); if(d<minD) minD=d; }
+        this.autoSneak = minD < 180;
+      } else this.autoSneak=false;
+      this.sneakActive = keys.has('shift') || keys.has('shiftleft') || this.autoSneak;
 
       // obstacles
       this.stepObstacles(dt, playerSp);
 
-      const dtm = dt * moveFactor;
-      for(const b of this.bots){ if(b._pfCooldown>0){ b._pfCooldown -= dt; if(b._pfCooldown<0) b._pfCooldown=0; } }
-      if(!inputActive){ for(const b of this.bots){ b.vx=0; b.vy=0; } }
-
+      // timers
+      const dtm = dt * (inputActive ? 1 : 0);
       if(this.slowTimer>0){ this.slowTimer-=dtm; if(this.slowTimer<=0){ this.botSpeedMul=1; } }
       if(this.freezeTimer>0){ this.freezeTimer-=dtm; }
       if(this.dashTimer>0){ this.dashTimer-=dtm; }
       if(this.predatorTimer>0){ this.predatorTimer-=dtm; if(this.predatorTimer<=0){ this.predator=false; } }
+      if(this.cloakTimer>0){ this.cloakTimer-=dtm; if(this.cloakTimer<=0){ this.cloak=false; } }
 
-      const anyTimerActive = (this.slowTimer>0) || (this.freezeTimer>0) || (this.dashTimer>0) || (this.predatorTimer>0);
-      if(anyTimerActive && !this.anyTimerActivePrev){ this.audio.startTimerLoop(); }
-      if((!anyTimerActive || !this.running) && this.anyTimerActivePrev){ this.audio.stopTimerLoop(); }
+      const anyTimerActive = (this.slowTimer>0) || (this.freezeTimer>0) || (this.dashTimer>0) || (this.predatorTimer>0) || (this.cloakTimer>0);
+      if(anyTimerActive && !this.anyTimerActivePrev){ this.audio.startTimer(); }
+      if((!anyTimerActive || !this.running) && this.anyTimerActivePrev){ this.audio.stopTimer(); }
       this.anyTimerActivePrev = anyTimerActive;
 
+      // bots
       const freezeScale = (this.freezeTimer>0)?0:1;
-      for(const b of this.bots){ const prev=this.prevBotStates.get(b)||b.state; b.update(dt*moveFactor*freezeScale,this.player,this.obstacles,this.cfg,this.grid); this.prevBotStates.set(b,b.state); }
-
+      for(const b of this.bots){ const prev=this.prevBotStates.get(b)||b.state; b.update(dt*(inputActive?1:0)*freezeScale,this.player,this.obstacles,this.cfg,this.grid); this.prevBotStates.set(b,b.state); }
+      // mist and trails
       this.mist.step(dt,this.player,this.bots[0]||{x:0,y:0});
-      // trails
       const spP=playerSp;
       if(this.trails.player && spP>8){
         const head=Math.atan2(this.player.vy, this.player.vx); const n=10; const rad=this.player.r;
@@ -1049,67 +1031,75 @@
         }
       }
       this.trails.player?.update(dt); for(const tr of this.trails.bots){ tr.update(dt); }
-      for(let i=this.effects.length-1;i>=0;i--){ const ef=this.effects[i]; ef.update(dt); if(ef.dead) this.effects.splice(i,1); }
-      this.bg.x=lerp(this.bg.x,this.player.x,0.05); this.bg.y=lerp(this.bg.y,this.player.y,0.05);
 
       // exit
       if(circleRectCollide(this.player.x,this.player.y,this.player.r,this.exitRect)){ this.audio.exit(); this.nextLevel(); }
 
-      // collisions with bots or predator mode
+      // powerups pickup
+      for(let i=this.powerUps.length-1;i>=0;i--){
+        const pu=this.powerUps[i];
+        if(Math.hypot(this.player.x-pu.x,this.player.y-pu.y) < this.player.r+pu.r){
+          this.applyPowerup(pu.type); this.powerUps.splice(i,1); haptics(18); this.audio.click();
+        }
+      }
+
+      // collisions with bots or predator cloak
       let caught=false, hitBot=null;
       if(this.predator && this.predatorTimer>0){
         for(let i=this.bots.length-1;i>=0;i--){
           const b=this.bots[i];
           if(Math.hypot(this.player.x-b.x,this.player.y-b.y) < this.player.r+b.r-2){
-            const cx=(this.player.x+b.x)*0.5, cy=(this.player.y+b.y)*0.5;
-            this.effects.push(new Burst(cx, cy, '#ffffff', 200));
-            this.audio?.tone?.(180,0.05,'square',0.05,0.002,0.03);
-            this.bots.splice(i,1);
-            this.trails.bots.splice(i,1);
+            const cx=(this.player.x+b.x)*0.5, cy=(this.player.y+b.y)*0.5; this.effects.push(new Burst(cx, cy, '#ffffff', 180));
+            this.bots.splice(i,1); this.trails.bots.splice(i,1);
           }
         }
-      } else {
+      } else if(!this.cloak){
         for(const b of this.bots){ if(Math.hypot(this.player.x-b.x,this.player.y-b.y) < this.player.r+b.r-2){ caught=true; hitBot=b; break; } }
       }
       if(caught){
         if(this.shield>0){
           this.shield--; const cx=(this.player.x+(hitBot?hitBot.x:this.player.x))*0.5, cy=(this.player.y+(hitBot?hitBot.y:this.player.y))*0.5;
-          this.effects.push(new Burst(cx, cy, '#66ff99', 220)); haptics(20);
+          this.effects.push(new Burst(cx, cy, '#66ff99', 220)); haptics(22);
         } else {
           if(this.running){
             this.effects.push(new Burst(this.player.x, this.player.y, '#ffffff', 200));
             if(hitBot){ const cx=(this.player.x+hitBot.x)*0.5, cy=(this.player.y+hitBot.y)*0.5; this.effects.push(new Burst(cx, cy, '#ff2a2a', 220)); }
-            this.audio.caught(); this.audio.stopMovement(); this.audio.stopTimerLoop?.(); this.shake(0.22); haptics(40);
+            this.audio.caught(); this.audio.stopTimer(); this.shake(0.22); haptics(36);
           }
           this.running=false;
           const score = this.level*100 + Math.min(99, Math.floor(this.time));
-          this.aiEndRun(score);
-          if(this.qualifies(score)) this.promptHighscore(score); else this.showHome(); // FIX: pass score, not level
+          if(this.qualifies(score)) this.promptHighscore(score); else this.showHome();
         }
       }
 
-      // ambush cues
+      // ambush cue
       for(const b of this.bots){
         const prev=this.prevBotStates.get(b)||'';
-        if(prev!=='chase' && b.state==='chase'){ this.audio.alert(); if(Math.random()<0.35){ this.planAmbush(b); } }
+        if(prev!=='chase' && b.state==='chase'){ this.audio.alert(); }
       }
 
       // HUD
-      if(hudStatus){
-        if(this.debug){
-          const chasing=this.bots.filter(b=>b.state==='chase').length;
-          hudStatus.textContent = chasing?(`chase x${chasing}`):'';
-        } else hudStatus.textContent = (this.autoMode?'AUTO':'');
-      }
+      hudStatus.textContent = this.autoMode ? (this.sneakActive ? 'AUTO • SNEAK' : 'AUTO') : (this.sneakActive ? 'SNEAK' : '');
 
-      // micro-planner tick
+      // micro planner update
       if(this.autoMode && this.time>=this.aiPlanNextT){ this.aiPlanDir = this.planAheadDirection(); this.aiPlanNextT = this.time + 0.10; }
     },
 
+    applyPowerup(type){
+      if(type==='slow'){ this.botSpeedMul=0.55; this.slowTimer=this.slowTotal; }
+      else if(type==='freeze'){ this.freezeTimer=this.freezeTotal; }
+      else if(type==='dash'){ this.dashTimer=this.dashTotal; }
+      else if(type==='cull'){ if(this.bots.length){ const b=this.bots.pop(); this.trails.bots.pop(); this.effects.push(new Burst(b.x,b.y,'#ffffff',180)); } }
+      else if(type==='predator'){ this.predator=true; this.predatorTimer=this.predatorTotal; }
+      else if(type==='shield'){ this.shield = (this.shield||0)+1; }
+      else if(type==='cloak'){ this.cloak=true; this.cloakTimer=this.cloakTotal; }
+    },
+
     drawBackground(){
-      const cx=this.bg.x*scale, cy=this.bg.y*scale, r=Math.hypot(canvas.width,canvas.height)*0.6;
+      const cx=this.player.x*scale, cy=this.player.y*scale, r=Math.hypot(canvas.width,canvas.height)*0.6;
       const g=ctx.createRadialGradient(cx,cy,0,cx,cy,r); g.addColorStop(0,'#101010'); g.addColorStop(1,'#000000');
       ctx.fillStyle=g; ctx.fillRect(0,0,canvas.width,canvas.height);
+      // subtle grid
       ctx.save(); ctx.globalAlpha=0.035; ctx.strokeStyle='#ffffff';
       const s=Math.max(36*scale, Math.min(canvas.width,canvas.height)/18), off=(this.time*15)%s;
       ctx.beginPath(); for(let x=off;x<canvas.width;x+=s){ ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); } for(let y=off;y<canvas.height;y+=s){ ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); } ctx.stroke(); ctx.restore();
@@ -1119,101 +1109,11 @@
 
     drawObstacle(ctx, o, time){
       const x=o.x*scale, y=o.y*scale, w=o.w*scale, h=o.h*scale;
-      let jx=0, jy=0; if(o.type==='tele' && o.shake>0){ const s=3*scale; jx=(Math.random()*2-1)*s; jy=(Math.random()*2-1)*s; }
-      const t=time + (o.phase||0);
-      const gx0=x + (Math.sin(t*0.7)*0.2+0.3)*w;
-      const gy0=y + (Math.cos(t*0.6)*0.2+0.3)*h;
-      const gx1=x + (Math.sin(t*1.1+1.7)*0.2+0.7)*w;
-      const gy1=y + (Math.cos(t*0.9+0.9)*0.2+0.7)*h;
-      ctx.fillStyle='rgba(255,255,255,0.10)'; ctx.fillRect(x+jx,y+jy,w,h);
-      const g=ctx.createLinearGradient(gx0,gy0,gx1,gy1);
-      g.addColorStop(0,'rgba(255,255,255,0.02)'); g.addColorStop(0.35,'rgba(255,255,255,0.06)'); g.addColorStop(0.65,'rgba(255,255,255,0.10)'); g.addColorStop(1,'rgba(255,255,255,0.14)');
-      ctx.fillStyle=g; ctx.fillRect(x+jx,y+jy,w,h);
-      const cx=o.x+o.w*0.5, cy=o.y+o.h*0.5;
-      let nearest=null, nd=Infinity; for(const b of this.bots){ const d=Math.hypot(b.x-cx,b.y-cy); if(d<nd){ nd=d; nearest=b; } }
-      const nearCol = nearest ? botColor(nearest.kind) : '#ffffff'; const distFactor = nearest ? Math.max(0, 1 - nd/(GRID_SIZE*6)) : 0;
-      const seed=(Math.sin((o.x*19.31 + o.y*11.73)/97.3)+1)*0.5; const flick=0.20 + 0.55*Math.abs(Math.sin(time*7.0 + seed*13.3))*(0.5+0.5*distFactor);
-      if(o.type!=='tele'){ const jAmp=(1.2 + 2.4*distFactor)*scale; jx += (Math.random()*2-1)*jAmp*flick*0.5; jy += (Math.random()*2-1)*jAmp*flick*0.5; }
-      ctx.save(); ctx.globalAlpha=flick*(0.55+0.35*distFactor); ctx.fillStyle=nearCol; ctx.fillRect(x+jx,y+jy,w,h); ctx.restore();
-      ctx.save(); ctx.globalAlpha=0.18 + 0.35*flick; ctx.strokeStyle=nearCol; ctx.lineWidth=2*scale; ctx.strokeRect(x+jx+1,y+jy+1,w-2,h-2); ctx.restore();
-      const area=w*h; const density = Math.min(140, Math.max(16, area/11000));
-      ctx.save();
-      for(let k=0;k<density;k++){
-        const rx=Math.random(), ry=Math.random();
-        const sx = x + rx*w; const sy = y + ry*h;
-        const sw = (0.6 + Math.random()*2.0)*scale; const sh = (0.6 + Math.random()*2.0)*scale;
-        const on = Math.sin((time*20.0 + seed*50.0 + rx*10.0 + ry*7.0))>0.2;
-        if(!on) continue;
-        const a = 0.05 + 0.25*flick*(0.7+0.3*Math.random());
-        ctx.fillStyle = nearCol; ctx.globalAlpha = a; ctx.fillRect(sx,sy,sw,sh);
-      }
-      ctx.restore();
-    },
-
-    // smarter Auto: micro-planner with short-horizon rollouts
-    planAheadDirection(){
-      const p=this.player, cfg=this.cfg;
-      const ex=this.exitRect.x+this.exitRect.w*0.5, ey=this.exitRect.y+this.exitRect.h*0.5;
-      const toExit=[ex-p.x, ey-p.y]; const el=Math.hypot(toExit[0],toExit[1])||1; const exu=[toExit[0]/el, toExit[1]/el];
-
-      // optional waypoint if exit LOS blocked
-      let wp=null; if(this.grid && !this.grid.losClear(p.x,p.y,ex,ey,this.obstacles)){
-        const path=this.grid.findPath(p.x,p.y,ex,ey); if(path && path.length>1){ wp=path[Math.min(2,path.length-1)]; }
-      }
-      const baseDir=wp? norm(wp.x-p.x, wp.y-p.y) : exu;
-
-      const candidates=[];
-      const angles=[0, 0.25, -0.25, 0.5, -0.5, 0.9, -0.9]; // radians offsets
-      for(const a of angles){
-        const ca=Math.cos(a), sa=Math.sin(a);
-        const dir=[ baseDir[0]*ca - baseDir[1]*sa, baseDir[0]*sa + baseDir[1]*ca ];
-        candidates.push(dir);
-      }
-
-      // rollout
-      const horizon=0.48, steps=12, dt=horizon/steps;
-      const speed = cfg.playerMaxSpeed*0.92 * ((this.dashTimer>0)?1.4:1);
-      const rMargin = p.r + 8;
-
-      const botsSnap = this.bots.map(b=>({ x:b.x, y:b.y, vx:b.vx, vy:b.vy, kind:b.kind }));
-      const scoreDir=(dir)=>{
-        let x=p.x, y=p.y, cost=0, hit=false;
-        for(let i=0;i<steps;i++){
-          const k=1; x+=dir[0]*speed*dt*k; y+=dir[1]*speed*dt*k;
-          // collide wall or obstacle
-          if(x<=rMargin||y<=rMargin||x>=W()-rMargin||y>=H()-rMargin){ cost+=8000; hit=true; break; }
-          const obs=this.nearbyObstaclesForCircle(x,y,rMargin+2);
-          for(const o of obs){ if(circleRectCollide(x,y,rMargin,o)){ cost+=5000; hit=true; break; } }
-          if(hit) break;
-          // bot proximity and LOS penalties
-          let minD=9999;
-          for(const b of botsSnap){
-            const bx = b.x + b.vx*dt*i, by = b.y + b.vy*dt*i;
-            const dx=x-bx, dy=y-by; const d=Math.hypot(dx,dy); if(d<minD) minD=d;
-            if(d<220){
-              const fNear = (220 - d)/220;
-              cost += 1600 * fNear*fNear;
-              // LOS in FOV adds extra
-              const heading=Math.atan2(b.vy||0.0001,b.vx||0.0001), dirTo=Math.atan2(y-by,x-bx);
-              const ang=Math.abs(((dirTo-heading+TAU*1.5)%TAU)-Math.PI);
-              if(ang<Math.PI*0.35 && this.grid.losClear(bx,by,x,y,this.obstacles)) cost += 700 * (1 - ang/(Math.PI*0.35));
-            }
-          }
-          // small reward for powerup along the way
-          for(const pu of this.powerUps){ const d=Math.hypot(pu.x-x, pu.y-y); if(d<26){ cost -= 120; } }
-          // reward progress to exit
-          const dExit=Math.hypot(ex-x, ey-y);
-          cost += dExit*0.6 / steps;
-        }
-        // straight incentive
-        const straight = dir[0]*exu[0] + dir[1]*exu[1];
-        cost -= straight*40;
-        return cost;
-      };
-
-      let best=candidates[0], bestC=Infinity;
-      for(const d of candidates){ const c=scoreDir(d); if(c<bestC){ bestC=c; best=d; } }
-      return norm(best[0],best[1]);
+      ctx.fillStyle='rgba(255,255,255,0.10)'; ctx.fillRect(x,y,w,h);
+      const seed=(Math.sin((o.x*19.31 + o.y*11.73)/97.3)+1)*0.5;
+      const flick=0.11 + 0.14*Math.abs(Math.sin(time*6.0 + seed*13.3));
+      ctx.save(); ctx.globalAlpha=flick; const col='#ffffff'; ctx.fillStyle=col; ctx.fillRect(x+1,y+1,w-2,h-2); ctx.restore();
+      ctx.save(); ctx.globalAlpha=0.18 + 0.35*flick; ctx.strokeStyle=col; ctx.lineWidth=2*scale; ctx.strokeRect(x+1,y+1,w-2,h-2); ctx.restore();
     },
 
     draw(){
@@ -1226,74 +1126,51 @@
 
       this.drawBackground(); this.mist.draw(ctx);
 
-      ctx.save();
+      // obstacles
       if(this.screen==='play'){ for(const o of this.obstacles){ this.drawObstacle(ctx, o, this.time); } }
-      ctx.restore();
 
       // exit spiral
       ctx.save();
-      let ecx,eccy,es;
-      if(this.screen==='play'){ const ex=this.exitRect.x*scale, ey=this.exitRect.y*scale, ew=this.exitRect.w*scale, eh=this.exitRect.h*scale; ecx=ex+ew*0.5; eccy=ey+eh*0.5; es=Math.min(ew,eh); } else { ecx=canvas.width*0.5; eccy=canvas.height*0.5; es=Math.min(canvas.width,canvas.height)*0.5; }
-      ctx.translate(ecx, eccy); ctx.rotate(this.time*0.9);
-      const turns=4.5, maxR=es*0.48, minR=es*0.06;
-      const a=minR, b=(maxR-minR)/(TAU*turns);
-      ctx.lineWidth=2.2*scale; ctx.strokeStyle='#ffffff'; ctx.globalAlpha=(this.screen==='play')?0.9:0.7;
+      const ex=this.exitRect; const ecx=(ex.x+ex.w*0.5)*scale, ecy=(ex.y+ex.h*0.5)*scale, es=Math.min(ex.w,ex.h)*scale;
+      ctx.translate(ecx, ecy); ctx.rotate(this.time*0.9);
+      const turns=4.5, maxR=es*0.48, minR=es*0.06; const a=minR, b=(maxR-minR)/(TAU*turns);
+      ctx.lineWidth=2.2*scale; ctx.strokeStyle='#ffffff'; ctx.globalAlpha=0.9;
       ctx.beginPath(); const steps=360;
       for(let i=0;i<=steps;i++){ const th=(i/steps)*(TAU*turns); const r=a+b*th; const x=Math.cos(th)*r, y=Math.sin(th)*r; if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
-      ctx.stroke(); ctx.globalAlpha=0.18;
-      for(let k=0;k<3;k++){ const rr=maxR*(0.55 + 0.12*k*(1+0.2*Math.sin(this.time*2+k))); ctx.beginPath(); ctx.arc(0,0, rr, 0, TAU); ctx.stroke(); }
-      ctx.restore();
+      ctx.stroke(); ctx.restore();
 
       if(this.screen==='play'){
-        if(this.powerUps){ for(const pu of this.powerUps){ pu.draw(ctx, this.time); } }
+        for(const pu of this.powerUps){ pu.draw(ctx, this.time); }
         this.trails.player?.draw(ctx); for(const tr of this.trails.bots){ tr.draw(ctx); }
         this.player.draw(ctx); for(const b of this.bots){ b.draw(ctx); }
       }
 
       // timers ring
-      if(this.slowTimer>0||this.freezeTimer>0||this.dashTimer>0||this.predatorTimer>0){
+      if(this.slowTimer>0||this.freezeTimer>0||this.dashTimer>0||this.predatorTimer>0||this.cloakTimer>0){
         const px=this.player.x*scale, py=this.player.y*scale, rr=this.player.r*scale+8*scale; ctx.save(); ctx.lineWidth=3*scale; ctx.globalAlpha=0.95; ctx.lineCap='round';
         const ring=(timer,total,col,ofs)=>{ if(!(timer>0&&total)) return; const frac=Math.max(0,Math.min(1,timer/total)); ctx.strokeStyle=col; const a0=ofs+this.time*1.6, a1=a0+frac*TAU; ctx.beginPath(); ctx.arc(px,py,rr, a0, a1); ctx.stroke(); };
         ring(this.slowTimer,this.slowTotal,'#bbbbbb',0);
         ring(this.freezeTimer,this.freezeTotal,'#bbddff',Math.PI*0.33);
         ring(this.dashTimer,this.dashTotal,'#ffffff',Math.PI*0.66);
         ring(this.predatorTimer,this.predatorTotal,'#ffffff',Math.PI*1.0);
+        ring(this.cloakTimer,this.cloakTotal,'#88ffaa',Math.PI*1.33);
         ctx.restore();
       }
 
-      for(const ef of this.effects){ ef.draw(ctx); }
-      if(this.predator && this.predatorTimer>0){ ctx.save(); ctx.globalCompositeOperation='difference'; ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.restore(); }
-
-      // tiny HUD bars
-      const bars=[];
-      if(this.slowTimer>0 && this.slowTotal){ bars.push({color:'#bbbbbb', frac:clamp(this.slowTimer/this.slowTotal,0,1)}); }
-      if(this.freezeTimer>0 && this.freezeTotal){ bars.push({color:'#bbddff', frac:clamp(this.freezeTimer/this.freezeTotal,0,1)}); }
-      if(this.dashTimer>0 && this.dashTotal){ bars.push({color:'#ffffff', frac:clamp(this.dashTimer/this.dashTotal,0,1)}); }
-      if(this.predatorTimer>0 && this.predatorTotal){ bars.push({color:'#ffffff', frac:clamp(this.predatorTimer/this.predatorTotal,0,1)}); }
-      if(bars.length){
-        const bw=110*scale, bh=6*scale, pad=6*scale, x0=10*scale, y0=10*scale;
-        ctx.save(); ctx.globalAlpha=0.9;
-        for(let i=0;i<bars.length;i++){
-          const b=bars[i], y=y0+i*(bh+pad);
-          ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(x0,y,bw,bh);
-          const fw = bw*b.frac; ctx.fillStyle=b.color; ctx.fillRect(x0,y,fw,bh);
-          ctx.save(); ctx.beginPath(); ctx.rect(x0,y,fw,bh); ctx.clip();
-          const stripeW=8*scale, gap=10*scale, speed=60*scale; const off=(this.time*speed)% (stripeW+gap);
-          ctx.globalAlpha=0.28; ctx.fillStyle='rgba(255,255,255,0.6)';
-          for(let sx=x0 - (stripeW+gap) + off; sx<x0+fw; sx+=stripeW+gap){
-            ctx.save(); ctx.translate(sx,y); ctx.transform(1,0,Math.tan(-Math.PI/6),1,0,0); ctx.fillRect(0,0,stripeW,bh); ctx.restore();
-          }
-          ctx.restore(); ctx.save(); ctx.globalAlpha=0.5; ctx.strokeStyle='#ffffff'; ctx.strokeRect(x0+0.5,y+0.5,fw-1,bh-1); ctx.restore();
-        }
-        ctx.restore();
+      // joystick
+      if(joystick.active){
+        const baseA=0.2, knobA=0.35; ctx.save(); ctx.fillStyle='rgba(255,255,255,'+baseA+')';
+        ctx.beginPath(); ctx.arc(joystick.cx*scale,joystick.cy*scale,joystick.radius*scale,0,TAU); ctx.fill();
+        ctx.fillStyle='rgba(255,255,255,'+knobA+')'; ctx.beginPath(); ctx.arc(joystick.x*scale,joystick.y*scale,(joystick.radius*0.45)*scale,0,TAU); ctx.fill(); ctx.restore();
       }
 
+      // debug
       if(this.debug){
         for(const b of this.bots){
           const bx=b.x*scale, by=b.y*scale;
-          const heading=Math.atan2(b.vy||0.0001,b.vx||0.0001);
           const fov=this.cfg.botFOV, range=this.cfg.botSightRange*scale;
           ctx.save(); ctx.globalAlpha=0.18; ctx.fillStyle='#ff2a2a';
+          const heading=Math.atan2(b.vy||0.0001,b.vx||0.0001);
           ctx.beginPath(); ctx.moveTo(bx,by); ctx.arc(bx,by,range, heading - fov*0.5, heading + fov*0.5); ctx.closePath(); ctx.fill(); ctx.restore();
           ctx.save(); ctx.globalAlpha=0.35; ctx.strokeStyle='#ff8080'; ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(this.player.x*scale, this.player.y*scale); ctx.stroke(); ctx.restore();
           if(b.path && b.path.length>1){
@@ -1307,53 +1184,140 @@
         }
       }
 
-      if(joystick.active){
-        const baseA=0.2, knobA=0.35; ctx.save(); ctx.fillStyle='rgba(255,255,255,'+baseA+')';
-        ctx.beginPath(); ctx.arc(joystick.cx*scale,joystick.cy*scale,joystick.radius*scale,0,TAU); ctx.fill();
-        ctx.fillStyle='rgba(255,255,255,'+knobA+')'; ctx.beginPath(); ctx.arc(joystick.x*scale,joystick.y*scale,(joystick.radius*0.45)*scale,0,TAU); ctx.fill(); ctx.restore();
-      }
+      ctx.restore();
 
-      ctx.restore(); // end shake translate
+      // minimap
+      this.minimap.draw(this);
     }
   };
+
+  // ---------- Code rain layer ----------
+  class CodeRain{
+    constructor(){ this.cols=[]; this.charSize=14; this.enabled=true; this.alpha=0.12; }
+    setSize(){
+      const cw=W(), ch=H();
+      const cs=this.charSize; const cols=Math.max(12, Math.floor(cw/(cs*1.2)));
+      this.cols.length=0;
+      for(let i=0;i<cols;i++){
+        this.cols.push({ x:(i+0.5)*cs*1.2, y:Math.random()*-ch, speed: (60 + Math.random()*140), gap: Math.floor(8+Math.random()*16), seed:Math.random()*1000 });
+      }
+    }
+    step(dt){
+      if(!this.enabled) return;
+      const ch=H();
+      for(const c of this.cols){
+        c.y += c.speed*dt;
+        if(c.y > ch + 80) { c.y = -Math.random()*ch; c.speed = 60 + Math.random()*140; }
+      }
+    }
+    draw(ctx, t){
+      if(!this.enabled || !game.visualsEnabled) return;
+      ctx.save();
+      ctx.globalAlpha=this.alpha;
+      const cs=this.charSize*scale, g='01ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+      ctx.font = `${cs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+      ctx.textAlign='center'; ctx.textBaseline='top';
+      for(const c of this.cols){
+        const x=c.x*scale;
+        for(let k=-20;k<40;k++){
+          const y=(c.y + k*c.gap)*scale;
+          if(y<-40 || y>canvas.height+40) continue;
+          const ch = g[(k + Math.floor(t*10) + ((c.seed*37)|0)) % g.length];
+          ctx.fillStyle = k===0 ? 'rgba(160,255,200,0.9)' : 'rgba(80,220,160,0.45)';
+          ctx.fillText(ch, x, y);
+        }
+      }
+      ctx.restore();
+    }
+  }
+
+  // ---------- player ----------
+  class Player{
+    constructor(pos){ this.x=pos.x; this.y=pos.y; this.r=PLAYER_RADIUS; this.vx=0; this.vy=0; }
+    update(dt, cfg){
+      const iv=inputVector(); const mag=joystick.active?joystick.mag:((iv[0]||iv[1])?1:0);
+      const dashMul = (game.dashTimer>0)?1.8:1;
+      const sneakMul = (game.sneakActive?0.58:1);
+      this.vx += iv[0]*cfg.playerSpeed*dashMul*sneakMul*dt*(0.7+0.3*mag);
+      this.vy += iv[1]*cfg.playerSpeed*dashMul*sneakMul*dt*(0.7+0.3*mag);
+      this.vx *= cfg.playerFriction; this.vy *= cfg.playerFriction;
+      const sp=Math.hypot(this.vx,this.vy), max=cfg.playerMaxSpeed*(dashMul>1?1.5:1)*sneakMul; if(sp>max){ const f=max/sp; this.vx*=f; this.vy*=f; }
+      let nx=this.x+this.vx*dt, ny=this.y+this.vy*dt;
+      if(nx<this.r){nx=this.r; this.vx=0;} if(ny<this.r){ny=this.r; this.vy=0;}
+      if(nx>W()-this.r){nx=W()-this.r; this.vx=0;} if(ny>H()-this.r){ny=H()-this.r; this.vy=0;}
+      const obs = game.nearbyObstaclesForCircle(nx,ny,this.r+4);
+      for(const o of obs){
+        if(circleRectCollide(nx,ny,this.r,o)){
+          const tryX=this.x+this.vx*dt; if(!circleRectCollide(tryX,this.y,this.r,o)){ nx=tryX; ny=this.y; this.vy=0; }
+          else{ const tryY=this.y+this.vy*dt; if(!circleRectCollide(this.x,tryY,this.r,o)){ ny=tryY; nx=this.x; this.vx=0; }
+          else{ const dx=this.x-(o.x+o.w*0.5), dy=this.y-(o.y+o.h*0.5); const l=Math.hypot(dx,dy)||1; nx=this.x+dx/l*2; ny=this.y+dy/l*2; this.vx*=0.5; this.vy*=0.5; } }
+        }
+      }
+      this.x=nx; this.y=ny;
+    }
+    draw(ctx){
+      ctx.save();
+      const base = game.cloak ? 'rgba(255,255,255,0.2)' : '#ffffff';
+      ctx.shadowColor=base; ctx.shadowBlur=12*scale; ctx.fillStyle=base;
+      ctx.beginPath(); ctx.arc(this.x*scale,this.y*scale,this.r*scale,0,TAU); ctx.fill(); ctx.restore();
+    }
+  }
+
+  // ---------- effects ----------
+  class Burst{
+    constructor(x,y,color='#ffffff',count=140){
+      this.color=color; this.n=count; this.px=new Float32Array(count); this.py=new Float32Array(count);
+      this.vx=new Float32Array(count); this.vy=new Float32Array(count); this.life=new Float32Array(count);
+      for(let i=0;i<count;i++){
+        this.px[i]=x; this.py[i]=y; const a=Math.random()*TAU, s=40+Math.random()*220;
+        this.vx[i]=Math.cos(a)*s; this.vy[i]=Math.sin(a)*s; this.life[i]=0.5+Math.random()*0.6;
+      }
+      this.dead=false;
+    }
+    update(dt){
+      if(this.dead) return; let alive=false;
+      for(let i=0;i<this.n;i++){
+        const l=this.life[i]-dt; this.life[i]=l; if(l>0){ alive=true; this.vx[i]*=0.96; this.vy[i]*=0.96; this.px[i]+=this.vx[i]*dt; this.py[i]+=this.vy[i]*dt; }
+      }
+      this.dead=!alive;
+    }
+    draw(ctx){
+      if(this.dead) return; ctx.save(); ctx.fillStyle=this.color;
+      for(let i=0;i<this.n;i++){ const t=Math.max(0,Math.min(1,this.life[i])); if(t<=0) continue; ctx.globalAlpha=t*0.6; ctx.fillRect(this.px[i]*scale, this.py[i]*scale, 1.6*scale, 1.6*scale); }
+      ctx.restore();
+    }
+  }
 
   // ---------- config ----------
   function genLevelConfig(level){
     const mobile = isCoarsePointer() || (Math.min(window.innerWidth, window.innerHeight) < 820);
-    const runs = Number(safeGet('hide_runs')||0);
-    const diffMul = runs===0 ? 0.85 : Math.min(1.5, 1 + runs*0.06);
+    const runs = Number(localStorage.getItem('hide_runs')||0);
+    const diffMul = runs===0 ? 0.9 : Math.min(1.5, 1 + runs*0.06);
     return {
-      playerSpeed:   mobile ? 3200 : (1800 + Math.min(600, level*120)),
+      playerSpeed:   mobile ? 3000 : (1800 + Math.min(600, level*120)),
       playerFriction:mobile ? 0.90 : 0.93,
-      playerMaxSpeed:mobile ? 820  : (420 + Math.min(180, level*20)),
-      botSpeed:(130 + Math.min(100, level*8)) * diffMul,
+      playerMaxSpeed:mobile ? 800  : (420 + Math.min(180, level*20)),
       botPathRecalc:Math.max(0.06, (0.32 - level*0.02) / diffMul),
       botSightRange:(240 + level*12) * diffMul,
       botFOV:Math.PI*0.75,
       botHearing:(110 + level*8) * diffMul,
       obstacleCount: Math.round((8 + Math.min(22, Math.floor(level*1.6))) * (runs===0?0.9:Math.min(1.35, 1 + runs*0.04))),
-      obstacleMaxSize:160,
       searchSpots:6 + Math.min(8, Math.floor(level/2)),
     };
   }
 
-  // ---------- input vector with smarter Auto blend ----------
+  // ---------- input vector with Auto micro planner ----------
   function inputVector(){
-    // Auto mode with micro-planner
     if(game?.autoMode && game.screen==='play' && game.running && !game.overlayActive){
       try{
-        const p = game.player; if(!p) return [0,0];
-        // base steering from existing heuristic
         const base = heuristicSteer();
-        // short-horizon planner direction
         const plan = game.aiPlanDir || [0,0];
-        // blend: planner dominant, heuristic as bias
         const vx = plan[0]*0.7 + base[0]*0.3;
         const vy = plan[1]*0.7 + base[1]*0.3;
         const L=Math.hypot(vx,vy)||1; return [vx/L, vy/L];
-      }catch{ /* fallthrough to manual */ }
+      }catch{}
     }
-    // manual input
+    // manual
     let ax=0, ay=0;
     if(keys.has('arrowleft')||keys.has('a')) ax -= 1;
     if(keys.has('arrowright')||keys.has('d')) ax += 1;
@@ -1364,12 +1328,14 @@
     return [0,0];
   }
 
-  // existing heuristic steering refactored to function for reuse
+  // lightweight heuristic steer from exit and threats
   function heuristicSteer(){
-    const p = game.player; const pol = (game.aiPolicyCurrent || game.aiPolicy || defaultAIPolicy());
+    const p = game.player;
     const ex=game.exitRect.x+game.exitRect.w*0.5, ey=game.exitRect.y+game.exitRect.h*0.5;
-    let vx = ex - p.x, vy = ey - p.y; const bl=Math.hypot(vx,vy)||1; let exux=vx/bl, exuy=vy/bl; vx=exux*pol.exitWeight; vy=exuy*pol.exitWeight;
-    const Rb = pol.botThreatR||220; const kB = pol.botRepelK||26000;
+    let vx = ex - p.x, vy = ey - p.y; const bl=Math.hypot(vx,vy)||1; let exux=vx/bl, exuy=vy/bl;
+    vx=exux; vy=exuy;
+
+    const Rb = 220; const kB = 22000;
     let fleeX=0, fleeY=0, minD2=Infinity, txSum=0, tySum=0, threatCount=0;
     for(const b of game.bots||[]){
       const dx = p.x - b.x, dy = p.y - b.y; const d2 = dx*dx+dy*dy; if(d2<1) continue;
@@ -1381,27 +1347,28 @@
     const minD = Math.sqrt(minD2||Infinity);
     if(threatCount>0 && isFinite(minD)){
       const bx = txSum/threatCount, by = tySum/threatCount;
-      const ax = p.x - bx, ay = p.y - by; const al = Math.hypot(ax,ay)||1;
-      const px = -ay/al, py = ax/al; const kS = (pol.sidestepK||0.22) + Math.max(0, (200-minD))/800;
+      const ax = p.x - bx, ay = p.y - by; const al=Math.hypot(ax,ay)||1;
+      const px = -ay/al, py = ax/al; const kS = 0.22 + Math.max(0, (200-minD))/800;
       fleeX += px * kS; fleeY += py * kS;
     }
-    const fear = isFinite(minD) ? Math.max(0, Math.min(1, (Rb - Math.min(Rb, minD)) / Rb)) : 0;
     const perpX = -exuy, perpY = exux;
     const fleePerp = (fleeX*perpX + fleeY*perpY);
-    const curve = Math.min(0.9, 0.5 + 0.4*Math.min(1, threatCount/2)) * fear;
-    vx = exux*pol.exitWeight + perpX * fleePerp * curve;
-    vy = exuy*pol.exitWeight + perpY * fleePerp * curve;
+    const curve = 0.5;
+    vx = exux + perpX * fleePerp * curve;
+    vy = exuy + perpY * fleePerp * curve;
+
+    // waypoint if exit LOS blocked
     if(game.grid){
       const losClear = game.grid.losClear(p.x,p.y,ex,ey,game.obstacles);
       game.aiWpTimer = game.aiWpTimer||0; game.aiWp = game.aiWp||null;
       const now = game.time||0; if((!losClear) && (game.aiWpTimer<=now)){
-        const path = game.grid.findPath(p.x,p.y,ex,ey);
+        const path = gridFindPathFallback(game.grid,p.x,p.y,ex,ey);
         if(path && path.length>1){ const i=Math.min(2, path.length-1); game.aiWp = path[i]; } else { game.aiWp=null; }
         game.aiWpTimer = now + 0.25;
       }
-      if(game.aiWp){ const wx = game.aiWp.x - p.x, wy = game.aiWp.y - p.y; const wl=Math.hypot(wx,wy)||1; const wpK=0.35; vx += (wx/wl)*wpK; vy += (wy/wl)*wpK;
-        if(wl<18 || losClear) { game.aiWp=null; } }
+      if(game.aiWp){ const wx = game.aiWp.x - p.x, wy = game.aiWp.y - p.y; const wl=Math.hypot(wx,wy)||1; const wpK=0.35; vx += (wx/wl)*wpK; vy += (wy/wl)*wpK; if(wl<18 || losClear) { game.aiWp=null; } }
     }
+
     // obstacle repel
     const Ro = 52; const kO = 0.065;
     for(const o of game.nearbyObstaclesForCircle(p.x,p.y,Ro*1.2)){
@@ -1410,18 +1377,9 @@
       const dx = p.x - nx, dy = p.y - ny; const d = Math.hypot(dx,dy);
       if(d>0 && d < Ro*1.2){ const w = kO * (Ro - d); let ox=(dx/d)*w, oy=(dy/d)*w;
         const opp = -(ox*exux + oy*exuy); if(opp>0){ ox += exux*opp; oy += exuy*opp; }
-        vx += ox; vy += oy; }
+        vx += ox; vy += oy;
+      }
     }
-    // forward component floor
-    const dotExit = vx*exux + vy*exuy; if(dotExit < 0.15){ vx += exux*(0.15 - dotExit); vy += exuy*(0.15 - dotExit); }
-    // stall breaker
-    game._aiPrevX = game._aiPrevX ?? p.x; game._aiPrevY = game._aiPrevY ?? p.y; game._aiStill = game._aiStill||0; game._aiTprev = game._aiTprev||game.time||0;
-    const dpx = p.x - game._aiPrevX, dpy = p.y - game._aiPrevY; const moved = Math.hypot(dpx,dpy);
-    const dt = Math.max(0, (game.time||0) - game._aiTprev);
-    game._aiPrevX = p.x; game._aiPrevY = p.y; game._aiTprev = game.time||0;
-    if(dt>0){ if(moved < 6*dt){ game._aiStill += dt; } else { game._aiStill = 0; } }
-    if(game._aiStill > 0.35){ const boost = 1.1; vx += exux*boost; vy += exuy*boost; if(game.aiWp){ const wx=game.aiWp.x-p.x, wy=game.aiWp.y-p.y; const wl=Math.hypot(wx,wy)||1; vx += (wx/wl)*0.8; vy += (wy/wl)*0.8; } }
-    if(Math.abs(vx)+Math.abs(vy)<0.001){ vx += (Math.random()*2-1)*0.1; vy += (Math.random()*2-1)*0.1; }
     const L=Math.hypot(vx,vy)||1; return [vx/L, vy/L];
   }
 
@@ -1441,11 +1399,16 @@
     game.showHome();
     window.game=game;
     requestAnimationFrame(loop);
+    // try service worker if present
+    if('serviceWorker' in navigator){ try{ navigator.serviceWorker.register('sw.js'); }catch{} }
   }
   init();
 
-  // ---------- end ----------
-  function genHotkeysNote(){ return 'Z Auto • R Restart • M Debug • N Mute • P Pause'; }
+  // ---------- power visuals ----------
+  function Burst(x,y,col='#ffffff',count=140){ return new window.Burst(x,y,col,count); } // placeholder to keep references if needed
+  // keep CodeRain class in scope
+  window.CodeRain = CodeRain;
+
 })();
 </script>
 </body>
