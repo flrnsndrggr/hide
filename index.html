@@ -1107,7 +1107,7 @@
       const s=Math.max(36*scale, Math.min(canvas.width,canvas.height)/18), off=(this.time*15)%s;
       ctx.beginPath(); for(let x=off;x<canvas.width;x+=s){ ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); } for(let y=off;y<canvas.height;y+=s){ ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); } ctx.stroke(); ctx.restore();
       this.fractal.drawTo(ctx, this.time*0.6);
-      this.codeRain.draw(ctx, this.time);
+      if(this.codeRain){ this.codeRain.draw(ctx, this.time); }
     },
 
     drawObstacle(ctx, o, time){
@@ -1192,7 +1192,7 @@
       ctx.restore();
 
       // minimap
-      this.minimap.draw(this);
+      if(this.screen==='play' && this.player){ this.minimap.draw(this); }
     }
   };
 
@@ -1393,7 +1393,7 @@
   function loop(t){
     requestAnimationFrame(loop);
     const elapsed=Math.min(0.25,(t-last)/1000); last=t; acc+=elapsed;
-    while(acc>=DT){ if(game.running) game.update(DT); game.codeRain.step(DT); acc-=DT; }
+    while(acc>=DT){ if(game.running) game.update(DT); if(game.codeRain) game.codeRain.step(DT); acc-=DT; }
     // draw
     game.draw();
     frames++; fpsTimer+=elapsed; if(fpsTimer>=0.5){ fps=Math.round(frames/fpsTimer); frames=0; fpsTimer=0; hudFps.textContent=fps+' fps'; game.onFps(fps); }
