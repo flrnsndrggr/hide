@@ -1096,7 +1096,10 @@
     },
 
     drawBackground(){
-      const cx=this.player.x*scale, cy=this.player.y*scale, r=Math.hypot(canvas.width,canvas.height)*0.6;
+      const hasP = this.player && typeof this.player.x === 'number' && typeof this.player.y === 'number';
+      const cx = hasP ? this.player.x*scale : canvas.width*0.5;
+      const cy = hasP ? this.player.y*scale : canvas.height*0.5;
+      const r = Math.hypot(canvas.width,canvas.height)*0.6;
       const g=ctx.createRadialGradient(cx,cy,0,cx,cy,r); g.addColorStop(0,'#101010'); g.addColorStop(1,'#000000');
       ctx.fillStyle=g; ctx.fillRect(0,0,canvas.width,canvas.height);
       // subtle grid
@@ -1130,14 +1133,16 @@
       if(this.screen==='play'){ for(const o of this.obstacles){ this.drawObstacle(ctx, o, this.time); } }
 
       // exit spiral
-      ctx.save();
-      const ex=this.exitRect; const ecx=(ex.x+ex.w*0.5)*scale, ecy=(ex.y+ex.h*0.5)*scale, es=Math.min(ex.w,ex.h)*scale;
-      ctx.translate(ecx, ecy); ctx.rotate(this.time*0.9);
-      const turns=4.5, maxR=es*0.48, minR=es*0.06; const a=minR, b=(maxR-minR)/(TAU*turns);
-      ctx.lineWidth=2.2*scale; ctx.strokeStyle='#ffffff'; ctx.globalAlpha=0.9;
-      ctx.beginPath(); const steps=360;
-      for(let i=0;i<=steps;i++){ const th=(i/steps)*(TAU*turns); const r=a+b*th; const x=Math.cos(th)*r, y=Math.sin(th)*r; if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
-      ctx.stroke(); ctx.restore();
+      if(this.screen==='play' && this.exitRect){
+        ctx.save();
+        const ex=this.exitRect; const ecx=(ex.x+ex.w*0.5)*scale, ecy=(ex.y+ex.h*0.5)*scale, es=Math.min(ex.w,ex.h)*scale;
+        ctx.translate(ecx, ecy); ctx.rotate(this.time*0.9);
+        const turns=4.5, maxR=es*0.48, minR=es*0.06; const a=minR, b=(maxR-minR)/(TAU*turns);
+        ctx.lineWidth=2.2*scale; ctx.strokeStyle='#ffffff'; ctx.globalAlpha=0.9;
+        ctx.beginPath(); const steps=360;
+        for(let i=0;i<=steps;i++){ const th=(i/steps)*(TAU*turns); const r=a+b*th; const x=Math.cos(th)*r, y=Math.sin(th)*r; if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+        ctx.stroke(); ctx.restore();
+      }
 
       if(this.screen==='play'){
         for(const pu of this.powerUps){ pu.draw(ctx, this.time); }
@@ -1146,7 +1151,7 @@
       }
 
       // timers ring
-      if(this.slowTimer>0||this.freezeTimer>0||this.dashTimer>0||this.predatorTimer>0||this.cloakTimer>0){
+      if(this.screen==='play' && this.player && (this.slowTimer>0||this.freezeTimer>0||this.dashTimer>0||this.predatorTimer>0||this.cloakTimer>0)){
         const px=this.player.x*scale, py=this.player.y*scale, rr=this.player.r*scale+8*scale; ctx.save(); ctx.lineWidth=3*scale; ctx.globalAlpha=0.95; ctx.lineCap='round';
         const ring=(timer,total,col,ofs)=>{ if(!(timer>0&&total)) return; const frac=Math.max(0,Math.min(1,timer/total)); ctx.strokeStyle=col; const a0=ofs+this.time*1.6, a1=a0+frac*TAU; ctx.beginPath(); ctx.arc(px,py,rr, a0, a1); ctx.stroke(); };
         ring(this.slowTimer,this.slowTotal,'#bbbbbb',0);
